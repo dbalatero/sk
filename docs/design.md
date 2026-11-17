@@ -57,3 +57,13 @@ cached commit IDs only. The last published remote commit must remain an
 ancestor of the local tip, and the recorded branch base must be an ancestor
 of the fetched tip. When those boundaries cannot be proven, choose local or
 remote explicitly rather than guessing which changes should survive.
+
+## Nix distribution
+
+The repository provides a flake with default and named `sk` packages for
+macOS and Linux on ARM64 and x86-64. Home Manager consumers can follow their
+own nixpkgs input. `package.nix` remains usable through `pkgs.callPackage`.
+Cargo.lock pins Rust dependencies, package builds run tests, and a wrapper
+provides Git and GitHub CLI. Authentication stays with the user's existing
+Git and `gh` configuration. A local Git flake input supports development;
+consumers update their lock after committing changes. Activation is manual.
