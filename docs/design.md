@@ -228,3 +228,13 @@ only existing stack, or starts a stack when none exists. Multiple stacks
 at trunk are ambiguous and fail before staging or creating anything; use
 create at the intended stack tip followed by `sk reorder --stack` instead.
 Ordinary create from trunk still starts a separate stack. No network is used.
+
+## Homebrew distribution
+
+The source repository doubles as a tap, with `Formula/sk.rb`. Users tap
+its explicit HTTPS remote URL and install `dbalatero/sk/sk --HEAD`.
+Until tagged releases exist, builds follow main and use Cargo.lock; there
+are no bottles. Rust and pkgconf are build dependencies, Git and gh are
+runtime dependencies, and Linux additionally uses OpenSSL. The installed
+wrapper puts Homebrew's Git and gh first on PATH, matching the Nix package.
+The formula's offline smoke test creates and renders a local branch.

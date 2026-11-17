@@ -4,6 +4,33 @@ A local-first stacked-branch CLI written in async Rust. GitHub's public
 Stacks API manages published PR stacks; local branches and recovery belong
 to `sk`.
 
+## Install with Homebrew
+
+```sh
+brew tap dbalatero/sk https://github.com/dbalatero/sk
+brew install --HEAD dbalatero/sk/sk
+```
+
+This builds the latest `main` from source using the committed `Cargo.lock`.
+Homebrew installs Rust for the build, plus Git and GitHub CLI for runtime;
+Nix is not required. There are no prebuilt Homebrew bottles yet.
+The installed command uses Homebrew's Git and `gh`.
+
+Authenticate for GitHub operations if you haven't already:
+
+```sh
+gh auth login
+```
+
+To update to the latest `main`:
+
+```sh
+brew update
+brew upgrade --fetch-HEAD dbalatero/sk/sk
+```
+
+Git 2.56 or newer is required. For Nix installation, see [Nix](#nix).
+
 ## Development
 
 Requires Rust, Git 2.56 or newer, and existing GitHub CLI authentication for
