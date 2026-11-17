@@ -79,10 +79,11 @@ pub fn requested(args: &[String]) -> Result<bool> {
             "submit [-d] [-n] [-s]",
             "Push ancestors through the current branch and create/update PRs.\n\
              Alias: s. Use ss to include descendants (--stack).\n\
-             New PRs open in $EDITOR unless -n is supplied.\n\
+             New PRs prompt to edit/use the default body and publish/draft.\n\
+             Editing uses $EDITOR and .github/PULL_REQUEST_TEMPLATE.md.\n\
              Existing PR titles, descriptions and draft status are preserved.",
             "  -d, --draft    Create new PRs as drafts\n\
-               -n, --no-edit  Generate PR metadata without opening an editor\n\
+               -n, --no-edit  Use the default body without opening an editor\n\
                -s, --stack    Include descendants (whole stack)\n\
                --no-stack    Submit only through the current branch\n\n\
              Example: sk ss -dn",

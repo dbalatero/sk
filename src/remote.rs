@@ -1,5 +1,6 @@
 //! Network operations, isolated to sync, submit, and merge.
 mod merge;
+mod submit_ui;
 
 use anyhow::{Context, Result, bail};
 use futures::{StreamExt, stream};
@@ -7,7 +8,7 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
@@ -378,8 +379,15 @@ pub fn commit_metadata(messages: &[String]) -> Result<(String, String)> {
 
 async fn edit_metadata(title: &str, body: &str) -> Result<(String, String)> {
     let editor = std::env::var("EDITOR").context("set EDITOR or use -n")?;
-    let parts =
-        shell_words::split(&editor).context("invalid EDITOR command")?;
+    edit_metadata_with_editor(title, body, &editor).await
+}
+
+async fn edit_metadata_with_editor(
+    title: &str,
+    body: &str,
+    editor: &str,
+) -> Result<(String, String)> {
+    let parts = shell_words::split(editor).context("invalid EDITOR command")?;
     let executable = parts.first().context("EDITOR is empty")?;
     let mut file = tempfile::Builder::new().suffix(".md").tempfile()?;
     write!(file, "{title}\n\n{body}\n")?;
@@ -522,8 +530,11 @@ impl SubmitReport {
         }
     }
 
-    fn line(&self) -> String {
-        format!("▸ {} ({})\n  {}", self.branch, self.action(), self.url)
+    fn line(&self, color: bool) -> String {
+        let code = if self.action() == "No-op" { "2" } else { "36" };
+        let branch = submit_ui::paint(&self.branch, code, color);
+        let url = submit_ui::paint(&self.url, "94", color);
+        format!("▸ {branch} ({})\n  {url}", self.action())
     }
 }
 
@@ -547,6 +558,7 @@ async fn submit(
             + 1
     };
     let mut metadata = BTreeMap::new();
+    let mut drafts = BTreeMap::new();
     let mut snapshots = BTreeMap::new();
     for name in std::iter::once(&stack.trunk)
         .chain(stack.branches[..end].iter().map(|b| &b.name))
@@ -594,10 +606,18 @@ async fn submit(
             branch.pr =
                 client.find_open(&branch.name).await?.map(|p| p.cache());
         }
-        if branch.pr.is_none() && !options.no_edit {
+        if branch.pr.is_none() {
             let (title, body) = &metadata[&branch.name];
-            let edited = edit_metadata(title, body).await?;
-            metadata.insert(branch.name.clone(), edited);
+            let (content, draft) = submit_ui::prepare(
+                &repo.root,
+                &branch.name,
+                title,
+                body,
+                &options,
+            )
+            .await?;
+            metadata.insert(branch.name.clone(), content);
+            drafts.insert(branch.name.clone(), draft);
         }
     }
     let stack = &state.stacks[index];
@@ -702,7 +722,7 @@ async fn submit(
                                 &parent,
                                 title,
                                 body,
-                                options.draft,
+                                drafts[&branch.name],
                             )
                             .await?
                             .cache()
@@ -720,7 +740,10 @@ async fn submit(
         pr.head_oid = snapshots[&branch.name].clone();
         state.stacks[index].branches[position].pr = Some(pr);
         repo.save(&state).await?;
-        println!("{}", report.line());
+        println!(
+            "{}",
+            report.line(submit_ui::color(std::io::stdout().is_terminal()))
+        );
         reports.push(report);
         parent = branch.name;
     }
@@ -1290,7 +1313,7 @@ mod tests {
             .unwrap();
             assert_eq!(reports[0].action(), action);
             assert_eq!(
-                reports[0].line(),
+                reports[0].line(false),
                 format!(
                     "▸ feature ({action})\n  https://github.com/o/r/pull/7"
                 )
@@ -1361,6 +1384,12 @@ mod tests {
         });
         repo.git(&["switch", "feature"]).await.unwrap();
         repo.save(&state).await.unwrap();
+        std::fs::create_dir(repo.root.join(".github")).unwrap();
+        std::fs::write(
+            repo.root.join(".github/PULL_REQUEST_TEMPLATE.md"),
+            "## Template body",
+        )
+        .unwrap();
         let listener =
             tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1408,6 +1437,7 @@ mod tests {
                     create_count.fetch_add(1, Ordering::SeqCst);
                     created.store(true, Ordering::SeqCst);
                     assert!(request.contains("\"draft\":true"));
+                    assert!(request.contains("\"body\":\"## Template body\""));
                     ("500 Internal Server Error", json!({"message":"retry"}))
                 } else if request.starts_with("PATCH ") {
                     assert!(request.contains("\"base\":\"main\""));
@@ -1668,6 +1698,77 @@ mod tests {
         let api = GitHub::new(&base, "o/r", "test".into());
         api.update_base(7, "main", &[7]).await.unwrap();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn template_replaces_generated_body_and_preserves_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(
+            submit_ui::default_body(root, "commit body").await.unwrap(),
+            "commit body"
+        );
+        std::fs::create_dir(root.join(".github")).unwrap();
+        std::fs::write(
+            root.join(".github/PULL_REQUEST_TEMPLATE.md"),
+            "## Why\n\n## Testing\n",
+        )
+        .unwrap();
+        let body = submit_ui::default_body(root, "commit body").await.unwrap();
+        assert_eq!(body, "## Why\n\n## Testing\n");
+        let (title, body) =
+            parse_pr_document(&format!("Commit title\n\n{body}")).unwrap();
+        assert_eq!(title, "Commit title");
+        assert_eq!(body, "## Why\n\n## Testing");
+        std::fs::remove_file(root.join(".github/PULL_REQUEST_TEMPLATE.md"))
+            .unwrap();
+        std::fs::create_dir(root.join(".github/PULL_REQUEST_TEMPLATE.md"))
+            .unwrap();
+        assert!(submit_ui::default_body(root, "fallback").await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn editor_receives_template_and_returns_edited_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("test editor.sh");
+        std::fs::write(&script, "printf '\\nEdited details\\n' >> \"$1\"\n")
+            .unwrap();
+        let editor =
+            format!("sh {}", shell_words::quote(script.to_str().unwrap()));
+        let result = edit_metadata_with_editor(
+            "Commit title",
+            "## Template body",
+            &editor,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.0, "Commit title");
+        assert_eq!(result.1, "## Template body\n\nEdited details");
+        assert!(
+            edit_metadata_with_editor("Commit title", "body", "false")
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn submit_colors_match_graphite_actions() {
+        let mut report = SubmitReport {
+            branch: "feature".into(),
+            url: "https://github.com/o/r/pull/7".into(),
+            created: false,
+            pushed: false,
+            parent_changed: false,
+        };
+        assert!(report.line(true).contains("\x1b[2mfeature\x1b[0m"));
+        for action in 0..3 {
+            report.created = action == 0;
+            report.pushed = action == 1;
+            report.parent_changed = action == 2;
+            assert!(report.line(true).contains("\x1b[36mfeature\x1b[0m"));
+            assert!(!report.line(false).contains('\x1b'));
+        }
     }
 
     #[test]

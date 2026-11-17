@@ -186,3 +186,15 @@ instead of Create. Existing leased-push and remote-change guards still apply.
 - Insertion works at trunk with one stack, at the tip, and with no stack.
 - Ambiguous trunk insertion fails before staging or changing checkout.
 - Existing rejection of middle creation without --insert remains intact.
+
+## Submit interaction
+
+- New PRs offer default-body/edit and publish/draft choices before push.
+- -dn remains prompt-free; existing PR metadata and draft state survive.
+- .github/PULL_REQUEST_TEMPLATE.md supplies the body, including with -n;
+  absent templates fall back to commits and unreadable templates fail.
+- The editor receives the title and template and returns edited metadata.
+- Escape/Ctrl-C cancel, and terminal mode/cursor are restored on exit.
+- Changed branches are cyan, no-ops dim, and URLs blue; redirected output
+  and NO_COLOR remain plain.
+- Mock API tests check that draft and template body reach PR creation.

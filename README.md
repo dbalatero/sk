@@ -64,9 +64,21 @@ Local commands use cached PR information. `sync` and `restack` require a clean c
 Use `sk continue` after resolving and staging rebase conflicts, or `sk abort`
 to restore the original stack.
 
-New PR editing uses `$EDITOR` and a temporary `.md` file: first line title,
-second line blank, remaining lines description. `-n` skips editing; `-d`
-creates drafts. Chrome reuses an existing tab for a cached PR URL on macOS.
+For each new PR, submit offers arrow-key choices to edit the body or use
+its default, then publish or create a draft. `-n` skips the body prompt and
+editor; `-d` skips the publish/draft choice and creates drafts. `-dn` skips
+both. Existing PR titles, bodies, and draft status stay unchanged.
+
+When `.github/PULL_REQUEST_TEMPLATE.md` exists in the working tree, its
+contents are the default body; otherwise sk uses commit messages. Editing
+opens `$EDITOR` with a temporary `.md` file: first line title, second line
+blank, remaining lines description. The template is prefilled in that body.
+Escape or Ctrl-C at a prompt cancels before pushing or creating PRs.
+Without a terminal, new PRs require `-n` (published) or `-dn` (drafts).
+
+Submit colors changed branch names cyan and no-ops dim, with blue PR URLs.
+Redirected output, `NO_COLOR`, and `TERM=dumb` disable colors.
+Chrome reuses an existing tab for a cached PR URL on macOS.
 
 See [design](docs/design.md), [implementation plan](docs/implementation-plan.md),
 and [acceptance criteria](docs/acceptance.md) for scope and verification.

@@ -238,3 +238,24 @@ are no bottles. Rust and pkgconf are build dependencies, Git and gh are
 runtime dependencies, and Linux additionally uses OpenSSL. The installed
 wrapper puts Homebrew's Git and gh first on PATH, matching the Nix package.
 The formula's offline smoke test creates and renders a local branch.
+
+## Submit prompts, templates, and colors
+
+New PRs offer Edit Body / Use default description, followed by Publish Pull
+Request / Create Draft Pull Request. Arrow keys, j/k, or Tab change the
+choice; Enter accepts. Editing is initially selected, and publishing is
+the initial submit choice, matching Graphite. Existing PRs are not prompted
+and keep title, body, and draft state. Choices for the entire submission
+are gathered before pushing or mutating GitHub; Escape/Ctrl-C cancels.
+
+`-n` skips body editing, `-d` forces draft creation, and `-dn` skips both
+prompts. Without a terminal, new PRs require `-n`; they publish unless `-d`
+is also set. The exact working-tree `.github/PULL_REQUEST_TEMPLATE.md`
+replaces the generated body when present, including with `-n`. Missing
+files fall back to commit metadata; other read errors fail before pushing.
+The editor document keeps the commit-derived title, blank line, and body.
+
+Graphite 1.7.0's submit renderer uses cyan for changed branch names and dim
+for no-ops; sk follows that palette and uses bright blue PR URLs. Colors
+require a terminal and respect NO_COLOR and TERM=dumb. Prompt UI runs on
+stderr; result colors follow stdout's terminal status.
