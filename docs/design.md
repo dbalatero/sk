@@ -87,3 +87,31 @@ ancestors and the current branch; --stack adds descendants. --no-stack
 explicitly selects the default scope. Narrow submission preserves local
 state for excluded descendants and leaves existing remote stack members
 in place. It does not prompt to broaden scope to published descendants.
+
+## Reorder
+
+`sk reorder` opens the Git-selected editor (GIT_EDITOR, core.editor, VISUAL,
+EDITOR, or Git's fallback). The document lists ancestors through the current
+branch, tip first, with trunk as a comment below. `--stack` includes the full
+linear stack. Saving a new order replays each branch's original commit range
+onto its new parent and restacks descendants, preserving branch names, PR
+cache, and the original checkout. The command never fetches or publishes.
+
+Only permutations of the selected branches are accepted. Graphite allows
+removing lines to introduce sibling branches; that falls outside sk's linear
+stack model. Missing, duplicate, added, or trunk entries fail before mutation.
+An unchanged order is a no-op. Editor failure, dirty worktrees, and affected
+branches checked out elsewhere prevent applying changes. Ref snapshots also
+detect edits made externally while the editor is open.
+
+Successful planning updates refs transactionally. Conflicts enter the same
+journaled rebase flow as restack: stage resolutions and run `sk continue`, or
+run `sk abort` to restore original refs, metadata, and checkout.
+
+Reference inspection: @withgraphite/graphite-cli 1.8.6 and its darwin-arm64
+package were downloaded to `/tmp/sk-graphite-inspect`. The npm JS is a native
+binary launcher; no implementation source was copied into this repository.
+Native `reorder --help` and a disposable repository probe confirmed the editor
+layout, scope, and sibling behavior when a line is removed. See also
+https://graphite.com/docs/command-reference and
+https://graphite.com/docs/edit-branch-order.

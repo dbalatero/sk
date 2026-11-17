@@ -50,6 +50,15 @@ pub fn requested(args: &[String]) -> Result<bool> {
              Sync accesses GitHub but never pushes or changes remote PRs.",
             "",
         ),
+        "reorder" => (
+            "reorder [--stack]",
+            "Open an editor to reorder branches from trunk through the current\n\
+             branch, then restack descendants. Lines run from tip to trunk.\n\
+             Keep each branch exactly once; additions/removals are unsupported.\n\
+             Requires a clean checkout. Resolve conflicts with continue/abort.\n\
+             Uses GIT_EDITOR, core.editor, or EDITOR. Stays offline.",
+            "  --stack  Include all descendants in the editor",
+        ),
         "restack" => (
             "restack",
             "Restack the current stack against local parents. Requires a clean\n\

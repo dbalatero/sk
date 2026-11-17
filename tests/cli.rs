@@ -39,6 +39,7 @@ fn every_command_and_alias_has_offline_help() {
         "ss",
         "sync",
         "restack",
+        "reorder",
         "continue",
         "abort",
         "log",

@@ -1,3 +1,5 @@
+mod reorder;
+
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -186,6 +188,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     let _lock = repo.lock()?;
     match args.first().map(String::as_str) {
         Some("create") => create(&repo, &args[1..]).await,
+        Some("reorder") => reorder::run(&repo, &args[1..]).await,
         Some("restack") => restack(&repo).await,
         Some("continue") => resume(&repo).await,
         Some("abort") => abort(&repo).await,
@@ -766,39 +769,63 @@ async fn restack(repo: &Repository) -> Result<()> {
             if error.downcast_ref::<ReplayConflict>().is_none() {
                 return Err(error);
             }
-            foreign_worktrees(repo, &proposed.stacks[index]).await?;
             eprintln!("{error}; starting interactive rebase");
-            let mut old = BTreeMap::new();
-            for b in &original.stacks[index].branches {
-                old.insert(
-                    b.name.clone(),
-                    Some(
-                        repo.git(&["rev-parse", &b.name]).await?.trim().into(),
-                    ),
-                );
-            }
-            let j = Journal {
-                original,
-                proposed,
-                original_branch: current,
-                checkout_oid: repo
-                    .git(&["rev-parse", "HEAD"])
-                    .await?
-                    .trim()
-                    .into(),
-                new: old.clone(),
-                old,
-                kind: "rebase".into(),
-                stack_index: index,
-                next: 0,
-                reconcile_steps,
-                reconcile_next: 0,
-            };
-            save_journal(repo, &j).await?;
-            advance(repo, j, false).await
+            begin_rebase(repo, original, proposed, index, reconcile_steps).await
         }
     }
 }
+async fn verify_snapshots(repo: &Repository) -> Result<()> {
+    let snapshots = repo
+        .snapshots
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Snapshot lock poisoned"))?
+        .clone();
+    for (name, expected) in snapshots {
+        let actual = repo
+            .git(&["rev-parse", "--verify", &format!("refs/heads/{name}")])
+            .await
+            .ok()
+            .map(|s| s.trim().to_owned());
+        if actual != expected {
+            bail!("{name} changed since planning; operation cancelled");
+        }
+    }
+    Ok(())
+}
+
+async fn begin_rebase(
+    repo: &Repository,
+    original: State,
+    proposed: State,
+    index: usize,
+    reconcile_steps: Vec<ReconcileStep>,
+) -> Result<()> {
+    verify_snapshots(repo).await?;
+    foreign_worktrees(repo, &proposed.stacks[index]).await?;
+    let mut old = BTreeMap::new();
+    for b in &original.stacks[index].branches {
+        old.insert(
+            b.name.clone(),
+            Some(repo.git(&["rev-parse", &b.name]).await?.trim().into()),
+        );
+    }
+    let j = Journal {
+        original,
+        proposed,
+        original_branch: repo.current().await?,
+        checkout_oid: repo.git(&["rev-parse", "HEAD"]).await?.trim().into(),
+        new: old.clone(),
+        old,
+        kind: "rebase".into(),
+        stack_index: index,
+        next: 0,
+        reconcile_steps,
+        reconcile_next: 0,
+    };
+    save_journal(repo, &j).await?;
+    advance(repo, j, false).await
+}
+
 async fn advance(
     repo: &Repository,
     mut j: Journal,

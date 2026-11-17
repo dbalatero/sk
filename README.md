@@ -120,3 +120,15 @@ Built-in aliases work before creating the file: `c` → `create`, `s` →
 User entries override these defaults. `s` submits ancestors through the
 current branch; `ss` also submits descendants, matching Graphite's submit
 scope. Use `sk <alias> --help` for command help.
+
+## Reorder
+
+Run `sk reorder` to edit branch order from trunk through the current branch,
+or `sk reorder --stack` for the whole stack. The editor lists the tip first;
+move lines while keeping every branch exactly once. Descendants are restacked
+automatically, and your original branch remains checked out. Configure the
+editor using `GIT_EDITOR`, `git config core.editor`, or `EDITOR`.
+
+On conflicts, resolve and stage changes, then run `sk continue`. Use
+`sk abort` to restore the original stack. Reorder is offline and requires a
+clean checkout. Adding/removing lines is unsupported by sk's linear model.

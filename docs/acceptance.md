@@ -113,3 +113,15 @@ Additional recovery coverage:
 These deterministic journal fixtures test recovery boundary states. They do
 not constitute exhaustive kill-process fault injection at every filesystem
 instruction.
+
+## Reorder acceptance
+
+- R1: Default editor includes ancestors through current, in tip-first order;
+  reordering restacks excluded descendants and preserves checkout.
+- R2: --stack includes descendants; unchanged order preserves refs.
+- R3: Invalid permutations and editor failure preserve refs and metadata.
+- R4: Conflicts support continue with new metadata and abort restoring old
+  refs, order, and checkout.
+- R5: Dirty checkout, foreign worktree, and editor-time ref changes fail
+  without discarding external work.
+- Coverage: tests/reorder.rs; offline command help in tests/cli.rs.

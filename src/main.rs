@@ -27,6 +27,7 @@ async fn run() -> Result<()> {
                 "  submit | s | ss [-dn] [--stack]\n",
                 "  sync\n",
                 "  aliases\n",
+                "  reorder [--stack]\n",
                 "  restack | continue | abort\n",
                 "  log short | ls\n",
                 "  checkout [branch] | co [branch]\n",
@@ -42,7 +43,7 @@ async fn run() -> Result<()> {
             println!("sk {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Some("create" | "restack" | "continue" | "abort") => {
+        Some("create" | "reorder" | "restack" | "continue" | "abort") => {
             sk::core::run(&args).await
         }
         Some("sync" | "submit" | "ss") => sk::remote::run(&args).await,
