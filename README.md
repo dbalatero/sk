@@ -1,5 +1,10 @@
 # sk
 
+[![CI][ci-badge]][ci-workflow]
+
+[ci-badge]: https://github.com/dbalatero/sk/actions/workflows/ci.yml/badge.svg?branch=main
+[ci-workflow]: https://github.com/dbalatero/sk/actions/workflows/ci.yml
+
 A local-first stacked-branch CLI written in async Rust. GitHub's public
 Stacks API manages published PR stacks; local branches and recovery belong
 to `sk`.
@@ -48,6 +53,14 @@ Tests run locally with `cargo test`: Git fixtures use temporary repositories
 and GitHub requests use HTTP mocks on localhost. No GitHub login or live
 repository access is needed. Tests explicitly disable submit prompts, even
 when run from a terminal. Cargo may download dependencies on the first run.
+
+GitHub Actions runs formatting, Clippy, and tests on Linux and macOS for
+pull requests and pushes to `main`. CI uses the toolchain in `flake.lock`.
+To use the same development environment locally, run `nix develop`, or:
+
+```sh
+nix develop --command cargo test --locked
+```
 
 ## Workflow
 

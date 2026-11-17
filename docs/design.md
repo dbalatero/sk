@@ -275,3 +275,14 @@ and TERM=dumb disable colors. Conflict recovery reports each successful
 rebase, including after continue, without claiming success for a conflict.
 The automatic restack after modify uses the same output. Planning for sync
 and other callers remains quiet.
+
+## Continuous integration
+
+The CI workflow runs on main pushes, pull requests, and manual dispatch.
+Linux and macOS each run cargo fmt --check, strict Clippy for all targets,
+and cargo test --locked (including doctests). A shared Nix development
+shell supplies the locked Rust and Git toolchain plus build dependencies;
+this avoids relying on runner Git versions for git replay support.
+Jobs have a 30-minute timeout and superseded runs are cancelled. Actions
+are pinned to release commit SHAs, repository permissions are read-only,
+and checkout credentials are not persisted. The README badge shows main.

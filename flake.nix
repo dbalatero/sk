@@ -20,6 +20,24 @@
         default = self.packages.${system}.sk;
       });
 
+      devShells = forAllSystems (system: {
+        default =
+          let
+            pkgs = nixpkgs.legacyPackages.${system};
+          in
+          pkgs.mkShell {
+            inputsFrom = [ self.packages.${system}.sk ];
+            packages = with pkgs; [
+              cargo
+              rustc
+              rustfmt
+              clippy
+              git
+              gh
+            ];
+          };
+      });
+
       checks = forAllSystems (system: {
         inherit (self.packages.${system}) sk;
       });
