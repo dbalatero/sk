@@ -14,6 +14,12 @@ pub fn requested(args: &[String]) -> Result<bool> {
     };
     let name = path[0].as_str();
     let (usage, description, options) = match name {
+        "aliases" => (
+            "aliases",
+            "Create ~/.config/sk/aliases if missing and print its path.\n\
+             Honors XDG_CONFIG_HOME. Existing aliases are never overwritten.",
+            "",
+        ),
         "create" => (
             "create [name] [-m <message>] [-a]",
             "Create a child branch from the stack tip or trunk.\n\
@@ -26,12 +32,14 @@ pub fn requested(args: &[String]) -> Result<bool> {
         ),
         "submit" | "ss" => (
             "submit [-d] [-n] [-s]",
-            "Push the entire current stack and create or update GitHub PRs.\n\
-             Alias: ss. New PRs open in $EDITOR unless -n is supplied.\n\
+            "Push ancestors through the current branch and create/update PRs.\n\
+             Alias: s. Use ss to include descendants (--stack).\n\
+             New PRs open in $EDITOR unless -n is supplied.\n\
              Existing PR titles, descriptions and draft status are preserved.",
             "  -d, --draft    Create new PRs as drafts\n\
                -n, --no-edit  Generate PR metadata without opening an editor\n\
-               -s, --stack    Submit the whole stack (the default)\n\n\
+               -s, --stack    Include descendants (whole stack)\n\
+               --no-stack    Submit only through the current branch\n\n\
              Example: sk ss -dn",
         ),
         "sync" => (

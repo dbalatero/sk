@@ -1,3 +1,4 @@
+mod aliases;
 mod help;
 
 use anyhow::{Result, bail};
@@ -12,6 +13,7 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = aliases::expand(args).await?;
     if help::requested(&args)? {
         return Ok(());
     }
@@ -21,9 +23,10 @@ async fn run() -> Result<()> {
                 "sk — local-first stacked branches\n\n",
                 "Usage: sk <command> [options]\n\n",
                 "Commands:\n",
-                "  create [name] [-m message] [-a]\n",
-                "  submit | ss [-dn] [--stack]\n",
+                "  create | c [name] [-m message] [-a]\n",
+                "  submit | s | ss [-dn] [--stack]\n",
                 "  sync\n",
+                "  aliases\n",
                 "  restack | continue | abort\n",
                 "  log short | ls\n",
                 "  checkout [branch] | co [branch]\n",
@@ -34,6 +37,7 @@ async fn run() -> Result<()> {
             ));
             Ok(())
         }
+        Some("aliases") => aliases::create(&args).await,
         Some("--version" | "-V") => {
             println!("sk {}", env!("CARGO_PKG_VERSION"));
             Ok(())

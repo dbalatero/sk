@@ -9,7 +9,8 @@ Only sync and submit perform Git network operations or API requests.
 - create accepts a branch name or -m message, with date-slug generated names.
   Commit staged changes, prompt about unstaged changes, and support -a.
   Empty named branches are allowed; middle-of-stack creation is rejected.
-- submit and ss publish the entire stack. -d creates draft PRs; -n skips
+- submit/s publish ancestors through the current branch; ss includes
+  descendants (--stack). -d creates draft PRs; -n skips
   editing. Existing PR metadata and draft state are preserved.
 - New PR titles use the first unique commit subject. Descriptions use its
   body followed by subsequent commit messages. Each editor file ends in .md:
@@ -67,3 +68,22 @@ Cargo.lock pins Rust dependencies, package builds run tests, and a wrapper
 provides Git and GitHub CLI. Authentication stays with the user's existing
 Git and `gh` configuration. A local Git flake input supports development;
 consumers update their lock after committing changes. Activation is manual.
+
+## Command aliases
+
+`sk aliases` creates `~/.config/sk/aliases` with defaults if absent and prints
+its path. It honors XDG_CONFIG_HOME and preserves existing contents. Each
+non-comment line contains an alias followed by command words; shell-style
+quoting groups arguments, without executing shell expressions. User entries
+override defaults, aliases may chain, and cycles report an error.
+
+Defaults: `c create`, `s submit`, `ss submit --stack`, `ls log short`, and
+`co checkout`. Expansion prepends configured arguments to caller arguments
+and happens before help handling. `stack --submit` is also accepted as
+`submit --stack`, supporting aliases such as `ss stack --submit`.
+
+Submission follows Graphite's documented scope: default submit includes
+ancestors and the current branch; --stack adds descendants. --no-stack
+explicitly selects the default scope. Narrow submission preserves local
+state for excluded descendants and leaves existing remote stack members
+in place. It does not prompt to broaden scope to published descendants.

@@ -32,7 +32,10 @@ fn every_command_and_alias_has_offline_help() {
     let directory = tempfile::tempdir().unwrap();
     for command in [
         "create",
+        "c",
+        "aliases",
         "submit",
+        "s",
         "ss",
         "sync",
         "restack",
@@ -96,4 +99,73 @@ fn help_flag_in_commit_message_is_not_intercepted() {
         .unwrap();
     assert!(!output.status.success());
     assert!(!String::from_utf8_lossy(&output.stdout).contains("Usage:"));
+}
+
+fn alias_command(config: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sk"));
+    command.env("XDG_CONFIG_HOME", config).env("PATH", "");
+    command
+}
+
+#[test]
+fn aliases_creates_defaults_without_overwriting_edits() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("sk/aliases");
+    let output = alias_command(directory.path())
+        .arg("aliases")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let defaults = std::fs::read_to_string(&path).unwrap();
+    assert!(defaults.contains("c create\n"));
+    assert!(defaults.contains("s submit\n"));
+    assert!(defaults.contains("ss submit --stack\n"));
+    std::fs::write(&path, "# my aliases:\nfdsa create\n").unwrap();
+    assert!(
+        alias_command(directory.path())
+            .arg("aliases")
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        "# my aliases:\nfdsa create\n"
+    );
+}
+
+#[test]
+fn aliases_expand_with_arguments_and_offline_help() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("sk")).unwrap();
+    std::fs::write(directory.path().join("sk/aliases"),
+        "# my aliases:\nss stack --submit\nfdsa create\nnext fdsa\nmsg create -m 'hello world'\n").unwrap();
+    for (command, expected) in [
+        ("c", "create"),
+        ("s", "submit"),
+        ("ss", "submit"),
+        ("fdsa", "create"),
+        ("next", "create"),
+        ("msg", "create"),
+    ] {
+        for args in [vec![command, "--help"], vec!["help", command]] {
+            let output =
+                alias_command(directory.path()).args(args).output().unwrap();
+            assert!(output.status.success(), "{command}: {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains(&format!("Usage: sk {expected}"))
+            );
+        }
+    }
+}
+
+#[test]
+fn alias_cycles_fail_with_an_actionable_error() {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("sk")).unwrap();
+    std::fs::write(directory.path().join("sk/aliases"), "a b\nb a\n").unwrap();
+    let output = alias_command(directory.path()).arg("a").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("alias cycle"));
 }

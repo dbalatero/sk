@@ -87,3 +87,24 @@ nix flake update sk
 
 The package includes the tools needed for authentication; sign in separately
 with `gh auth login` if needed. It does not embed credentials.
+
+## Aliases
+
+Run `sk aliases` to create and print the path to `~/.config/sk/aliases`
+(or `$XDG_CONFIG_HOME/sk/aliases`). Edit that file to customize commands:
+
+```text
+# my aliases:
+ss stack --submit
+fdsa create
+```
+
+Then `sk fdsa -m "a change"` runs `sk create -m "a change"`. Alias arguments
+come before caller arguments. Comments, quoted arguments, and chained
+aliases are supported; shell expressions are not executed.
+
+Built-in aliases work before creating the file: `c` → `create`, `s` →
+`submit`, `ss` → `submit --stack`, `ls` → `log short`, `co` → `checkout`.
+User entries override these defaults. `s` submits ancestors through the
+current branch; `ss` also submits descendants, matching Graphite's submit
+scope. Use `sk <alias> --help` for command help.

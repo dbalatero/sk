@@ -40,7 +40,8 @@ S8 Partial success is summarized and returns nonzero when attention is needed.
 
 ## Submission
 
-P1 submit/ss publishes the entire stack; -dn creates drafts without editing.
+P1 submit/s publishes through the current branch; ss/--stack also publishes
+descendants. -dn creates drafts without editing.
 P2 Existing PR metadata and draft state remain intact.
 P3 New PR metadata derives from branch-specific commit messages.
 P4 Editor files end in .md with title, blank line, then description.

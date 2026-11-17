@@ -250,7 +250,7 @@ impl GitHub {
                     .filter(|p| p.merged_at.is_none() && p.state == "open")
                     .map(|p| p.number)
                     .collect();
-                if active == numbers {
+                if active.starts_with(numbers) {
                     return Ok(Some(stack.number));
                 }
                 if !active.is_empty()
@@ -333,7 +333,7 @@ impl GitHub {
                         .filter(|p| p.merged_at.is_none() && p.state == "open")
                         .map(|p| p.number)
                         .collect();
-                    if active == numbers {
+                    if active.starts_with(numbers) {
                         return Ok(Some(stack.number));
                     }
                 }
@@ -437,6 +437,7 @@ async fn api(repo: &Repository, remote: &str) -> Result<GitHub> {
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct SubmitOptions {
+    stack: bool,
     draft: bool,
     no_edit: bool,
 }
@@ -445,13 +446,14 @@ fn submit_options(args: &[String]) -> Result<SubmitOptions> {
     let mut result = SubmitOptions::default();
     for arg in args {
         match arg.as_str() {
-            "--stack" | "-s" => {}
+            "--stack" | "--stack=true" | "-s" => result.stack = true,
+            "--no-stack" | "--stack=false" => result.stack = false,
             "--draft" => result.draft = true,
             "--no-edit" => result.no_edit = true,
             value if value.starts_with('-') && !value.starts_with("--") => {
                 for flag in value[1..].chars() {
                     match flag {
-                        's' => {}
+                        's' => result.stack = true,
                         'd' => result.draft = true,
                         'n' => result.no_edit = true,
                         _ => bail!("unsupported submit flag: -{flag}"),
@@ -468,7 +470,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     let command = args.first().context("missing remote command")?;
     match command.as_str() {
         "submit" | "ss" => {
-            let options = submit_options(&args[1..])?;
+            let mut options = submit_options(&args[1..])?;
+            if command == "ss" {
+                options.stack = true;
+            }
             let repo = Repository::discover().await?;
             let _lock = repo.lock()?;
             repo.ensure_idle().await?;
@@ -500,10 +505,21 @@ async fn submit(
     options: SubmitOptions,
 ) -> Result<()> {
     let stack = &state.stacks[index];
+    let current = repo.current().await?;
+    let end = if options.stack {
+        stack.branches.len()
+    } else {
+        stack
+            .branches
+            .iter()
+            .position(|b| b.name == current)
+            .context("checkout a tracked stack branch before submitting")?
+            + 1
+    };
     let mut metadata = BTreeMap::new();
     let mut snapshots = BTreeMap::new();
     for name in std::iter::once(&stack.trunk)
-        .chain(stack.branches.iter().map(|b| &b.name))
+        .chain(stack.branches[..end].iter().map(|b| &b.name))
     {
         let oid = repo
             .git(&["rev-parse", &format!("refs/heads/{name}")])
@@ -513,7 +529,7 @@ async fn submit(
         snapshots.insert(name.clone(), oid);
     }
     let mut parent = snapshots[&stack.trunk].clone();
-    for branch in &stack.branches {
+    for branch in &stack.branches[..end] {
         let head = &snapshots[&branch.name];
         repo.git(&["merge-base", "--is-ancestor", &parent, head])
             .await
@@ -533,7 +549,7 @@ async fn submit(
         metadata.insert(branch.name.clone(), content);
         parent = head.clone();
     }
-    for branch in &mut state.stacks[index].branches {
+    for branch in &mut state.stacks[index].branches[..end] {
         if let Some(cached) = &branch.pr {
             if let Some(pr) = client.pull(cached.number).await? {
                 if pr.merged_at.is_some() || pr.state == "closed" {
@@ -562,8 +578,7 @@ async fn submit(
         stack.remote.clone(),
     ];
     lookup.extend(
-        stack
-            .branches
+        stack.branches[..end]
             .iter()
             .map(|b| format!("refs/heads/{}", b.name)),
     );
@@ -585,7 +600,7 @@ async fn submit(
         }
     }
     let mut args = vec!["push".to_owned(), "--atomic".into()];
-    for branch in &stack.branches {
+    for branch in &stack.branches[..end] {
         let reference = format!("refs/heads/{}", branch.name);
         let remote = observed.get(&reference);
         if remote != branch.remote_oid.as_ref()
@@ -598,7 +613,7 @@ async fn submit(
     }
     args.push("--".into());
     args.push(stack.remote.clone());
-    for branch in &stack.branches {
+    for branch in &stack.branches[..end] {
         args.push(format!(
             "{}:refs/heads/{}",
             snapshots[&branch.name], branch.name
@@ -608,16 +623,15 @@ async fn submit(
     repo.git(&refs)
         .await
         .context("atomic push failed; run sk sync")?;
-    for branch in &mut state.stacks[index].branches {
+    for branch in &mut state.stacks[index].branches[..end] {
         branch.remote_oid = Some(snapshots[&branch.name].clone());
         branch.fetched_oid = branch.remote_oid.clone();
     }
     repo.save(&state).await?;
     let mut parent = state.stacks[index].trunk.clone();
-    for position in 0..state.stacks[index].branches.len() {
+    for position in 0..end {
         let branch = state.stacks[index].branches[position].clone();
-        let allowed: Vec<u64> = state.stacks[index]
-            .branches
+        let allowed: Vec<u64> = state.stacks[index].branches[..end]
             .iter()
             .filter_map(|b| b.pr.as_ref().map(|p| p.number))
             .collect();
@@ -656,8 +670,7 @@ async fn submit(
         repo.save(&state).await?;
         parent = branch.name;
     }
-    let numbers: Vec<u64> = state.stacks[index]
-        .branches
+    let numbers: Vec<u64> = state.stacks[index].branches[..end]
         .iter()
         .filter_map(|b| b.pr.as_ref().map(|p| p.number))
         .collect();
@@ -982,9 +995,16 @@ mod tests {
         assert_eq!(
             submit_options(&["-sdn".into()]).unwrap(),
             SubmitOptions {
+                stack: true,
                 draft: true,
                 no_edit: true
             }
+        );
+        assert!(!submit_options(&[]).unwrap().stack);
+        assert!(
+            !submit_options(&["--stack".into(), "--no-stack".into()])
+                .unwrap()
+                .stack
         );
         assert!(submit_options(&["--force".into()]).is_err());
         assert_eq!(
@@ -1111,6 +1131,15 @@ mod tests {
 
     #[tokio::test]
     async fn submission_retry_reuses_pr_created_before_server_error() {
+        check_submission_scope(false).await;
+    }
+
+    #[tokio::test]
+    async fn stack_submission_pushes_descendants() {
+        check_submission_scope(true).await;
+    }
+
+    async fn check_submission_scope(whole_stack: bool) {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -1131,7 +1160,7 @@ mod tests {
         let root = repo.git(&["rev-parse", "main"]).await.unwrap();
         repo.git(&["switch", "-c", "feature"]).await.unwrap();
         let head = add_commit(&repo, "feature.txt", "feature").await;
-        let state = State {
+        let mut state = State {
             version: 1,
             stacks: vec![Stack {
                 id: "feature".into(),
@@ -1147,6 +1176,16 @@ mod tests {
                 github_number: None,
             }],
         };
+        repo.git(&["switch", "-c", "descendant"]).await.unwrap();
+        add_commit(&repo, "descendant.txt", "descendant").await;
+        state.stacks[0].branches.push(core::Branch {
+            name: "descendant".into(),
+            base: head.clone(),
+            remote_oid: None,
+            fetched_oid: None,
+            pr: None,
+        });
+        repo.git(&["switch", "feature"]).await.unwrap();
         repo.save(&state).await.unwrap();
         let listener =
             tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1219,12 +1258,26 @@ mod tests {
         let api =
             GitHub::new(&format!("http://{address}"), "o/r", "test".into());
         let options = || SubmitOptions {
+            stack: whole_stack,
             draft: true,
             no_edit: true,
         };
         assert!(submit(&repo, state, 0, &api, options()).await.is_err());
         let retry_state = repo.load().await.unwrap();
         assert!(retry_state.stacks[0].branches[0].remote_oid.is_some());
+        if whole_stack {
+            assert!(retry_state.stacks[0].branches[1].remote_oid.is_some());
+            assert!(
+                !repo
+                    .git(&["ls-remote", "origin", "refs/heads/descendant"])
+                    .await
+                    .unwrap()
+                    .trim()
+                    .is_empty()
+            );
+            server.abort();
+            return;
+        }
         submit(&repo, retry_state, 0, &api, options())
             .await
             .unwrap();
@@ -1236,6 +1289,17 @@ mod tests {
                 .unwrap()
                 .number,
             42
+        );
+        let saved = repo.load().await.unwrap();
+        assert_eq!(saved.stacks[0].branches.len(), 2);
+        assert!(saved.stacks[0].branches[1].remote_oid.is_none());
+        assert!(saved.stacks[0].branches[1].pr.is_none());
+        assert!(
+            repo.git(&["ls-remote", "origin", "refs/heads/descendant"])
+                .await
+                .unwrap()
+                .trim()
+                .is_empty()
         );
         server.abort();
     }
@@ -1372,6 +1436,24 @@ mod tests {
         .await;
         let api = GitHub::new(&base, "o/r", "test".into());
         api.update_base(7, "main", &[7]).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn narrow_submission_preserves_remote_descendants() {
+        let stack = json!({"number": 9, "pull_requests": [
+            {"number": 7, "state": "open", "merged_at": null},
+            {"number": 8, "state": "open", "merged_at": null},
+            {"number": 10, "state": "open", "merged_at": null},
+        ]});
+        let (base, server) = mock_sequence(vec![(
+            "GET /repos/o/r/stacks?",
+            200,
+            json!([stack]),
+        )])
+        .await;
+        let api = GitHub::new(&base, "o/r", "test".into());
+        assert_eq!(api.publish_stack(&[7, 8], Some(9)).await.unwrap(), Some(9));
         server.await.unwrap();
     }
 
