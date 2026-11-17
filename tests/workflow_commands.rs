@@ -445,6 +445,9 @@ fn modify_restack_conflicts_support_abort_and_continue() {
         let out = sk(p, &["m", "-am", "amended"]);
         assert!(!out.status.success());
         assert!(String::from_utf8_lossy(&out.stderr).contains("sk continue"));
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("Restacked b on a.")
+        );
         let amended = git(p, &["rev-parse", "a"]);
         if abort {
             success(p, &["abort"]);
@@ -453,7 +456,11 @@ fn modify_restack_conflicts_support_abort_and_continue() {
         } else {
             std::fs::write(p.join("shared"), "resolved").unwrap();
             git(p, &["add", "shared"]);
-            success(p, &["continue"]);
+            let out = success(p, &["continue"]);
+            assert!(
+                String::from_utf8_lossy(&out.stdout)
+                    .contains("Restacked b on a.")
+            );
             assert_eq!(git(p, &["show", "b:shared"]), "resolved");
         }
         assert_eq!(git(p, &["rev-parse", "a"]), amended);
@@ -518,4 +525,27 @@ fn create_with_staged_changes_skips_terminal_staging_prompt() {
         "keep"
     );
     assert!(git(p, &["diff", "--cached", "--name-only"]).is_empty());
+}
+
+#[test]
+fn restack_reports_progress_changes_and_noops() {
+    let dir = fixture();
+    let p = dir.path();
+    success(p, &["create", "a"]);
+    commit(p, "a", "A");
+    success(p, &["create", "b"]);
+    commit(p, "b", "B");
+    let out = success(p, &["rs"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("a does not need to be restacked on main."));
+    assert!(text.contains("b does not need to be restacked on a."));
+    assert!(!text.contains('\x1b'));
+    git(p, &["switch", "a"]);
+    commit(p, "a", "new A");
+    let out = success(p, &["rs"]);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Restacking b on a..."));
+    assert!(text.contains("Restacked b on a."));
+    assert!(text.contains("a does not need to be restacked on main."));
+    assert_eq!(git(p, &["branch", "--show-current"]), "a");
 }

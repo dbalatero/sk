@@ -207,3 +207,10 @@ instead of Create. Existing leased-push and remote-change guards still apply.
 - Partially staged files commit only their indexed content; unstaged and
   untracked work remain untouched. Explicit -a still includes all changes.
 - An empty index retains the interactive staging prompt.
+
+## Restack feedback
+
+- Restack reports changed and unchanged branches with their parent names.
+- Progress appears before replay; success appears only after ref updates.
+- Conflicts do not print success for the failed branch; continue reports
+  completion after resolving it. Output stays plain when redirected.

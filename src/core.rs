@@ -222,6 +222,15 @@ pub async fn plan_stack(
     stack: &Stack,
     heads: &BTreeMap<String, String>,
 ) -> Result<BTreeMap<String, String>> {
+    plan_stack_with_progress(repo, stack, heads, false).await
+}
+
+async fn plan_stack_with_progress(
+    repo: &Repository,
+    stack: &Stack,
+    heads: &BTreeMap<String, String>,
+    progress: bool,
+) -> Result<BTreeMap<String, String>> {
     foreign_worktrees(repo, stack).await?;
     for name in std::iter::once(&stack.trunk)
         .chain(stack.branches.iter().map(|b| &b.name))
@@ -242,11 +251,15 @@ pub async fn plan_stack(
         Some(oid) => oid.clone(),
         None => repo.git(&["rev-parse", &stack.trunk]).await?.trim().into(),
     };
+    let mut parent_name = &stack.trunk;
     for branch in &stack.branches {
         let tip = match heads.get(&branch.name) {
             Some(oid) => oid.clone(),
             None => repo.git(&["rev-parse", &branch.name]).await?.trim().into(),
         };
+        if progress && branch.base != parent {
+            restack_message(&branch.name, parent_name, RestackStatus::Progress);
+        }
         let next = if branch.base == parent
             && repo
                 .git(&["merge-base", "--is-ancestor", &parent, &tip])
@@ -287,6 +300,7 @@ pub async fn plan_stack(
         };
         result.insert(branch.name.clone(), next.clone());
         parent = next;
+        parent_name = &branch.name;
     }
     Ok(result)
 }
@@ -726,6 +740,46 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
     }
     Ok(())
 }
+#[derive(PartialEq, Eq)]
+enum RestackStatus {
+    Progress,
+    Done,
+    Noop,
+}
+
+fn restack_message(branch: &str, parent: &str, status: RestackStatus) {
+    use std::io::{IsTerminal, Write};
+    let color = std::io::stdout().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::env::var("TERM").as_deref() != Ok("dumb");
+    let paint = |text: &str, code| {
+        if color {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        } else {
+            text.to_owned()
+        }
+    };
+    let branch = paint(
+        branch,
+        if status == RestackStatus::Done {
+            32
+        } else {
+            36
+        },
+    );
+    let parent = paint(parent, 36);
+    match status {
+        RestackStatus::Progress => {
+            println!("Restacking {branch} on {parent}...")
+        }
+        RestackStatus::Done => println!("Restacked {branch} on {parent}."),
+        RestackStatus::Noop => {
+            println!("{branch} does not need to be restacked on {parent}.")
+        }
+    }
+    let _ = std::io::stdout().flush();
+}
+
 async fn restack(repo: &Repository) -> Result<()> {
     repo.ensure_idle().await?;
     repo.clean().await?;
@@ -802,10 +856,40 @@ async fn restack(repo: &Repository) -> Result<()> {
     }
     let result = match reconcile_conflict {
         Some(error) => Err(error),
-        None => plan_stack(repo, &proposed.stacks[index], &heads).await,
+        None => {
+            plan_stack_with_progress(
+                repo,
+                &proposed.stacks[index],
+                &heads,
+                true,
+            )
+            .await
+        }
     };
     match result {
-        Ok(plan) => apply_plan(repo, &original, &proposed, &plan).await,
+        Ok(plan) => {
+            let stack = &proposed.stacks[index];
+            let mut changed = Vec::new();
+            for branch in &stack.branches {
+                let old = repo.git(&["rev-parse", &branch.name]).await?;
+                changed.push(old.trim() != plan[&branch.name]);
+            }
+            apply_plan(repo, &original, &proposed, &plan).await?;
+            let mut parent = &stack.trunk;
+            for (branch, changed) in stack.branches.iter().zip(changed) {
+                restack_message(
+                    &branch.name,
+                    parent,
+                    if changed {
+                        RestackStatus::Done
+                    } else {
+                        RestackStatus::Noop
+                    },
+                );
+                parent = &branch.name;
+            }
+            Ok(())
+        }
         Err(error) => {
             if error.downcast_ref::<ReplayConflict>().is_none() {
                 return Err(error);
@@ -899,6 +983,7 @@ async fn advance(
             &stack.branches[j.next - 1].name
         };
         let base = repo.git(&["rev-parse", parent]).await?.trim().to_string();
+        restack_message(&b.name, parent, RestackStatus::Done);
         j.proposed.stacks[j.stack_index].branches[j.next].base = base;
         j.next += 1;
         save_journal(repo, &j).await?;
@@ -914,6 +999,8 @@ async fn advance(
         let parent_oid =
             repo.git(&["rev-parse", parent]).await?.trim().to_string();
         save_journal(repo, &j).await?;
+        let old = repo.git(&["rev-parse", &b.name]).await?;
+        restack_message(&b.name, parent, RestackStatus::Progress);
         let status = Command::new("git")
             .current_dir(&repo.root)
             .args([
@@ -933,6 +1020,16 @@ async fn advance(
         if !status.success() {
             bail!("Resolve and stage conflicts, then sk continue; or sk abort");
         }
+        let new = repo.git(&["rev-parse", &b.name]).await?;
+        restack_message(
+            &b.name,
+            parent,
+            if old.trim() == new.trim() {
+                RestackStatus::Noop
+            } else {
+                RestackStatus::Done
+            },
+        );
         let name = b.name.clone();
         j.proposed.stacks[j.stack_index].branches[j.next].base = parent_oid;
         j.new.insert(

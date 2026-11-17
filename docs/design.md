@@ -264,3 +264,14 @@ Graphite 1.7.0's submit renderer uses cyan for changed branch names and dim
 for no-ops; sk follows that palette and uses bright blue PR URLs. Colors
 require a terminal and respect NO_COLOR and TERM=dumb. Prompt UI runs on
 stderr; result colors follow stdout's terminal status.
+
+## Restack output
+
+Restack prints progress before replaying changed branches. After a successful
+atomic update, each branch reports Graphite-style `Restacked X on Y.` or
+`X does not need to be restacked on Y.` Green marks a restacked branch;
+cyan marks parents and unchanged branches. Redirected output, NO_COLOR,
+and TERM=dumb disable colors. Conflict recovery reports each successful
+rebase, including after continue, without claiming success for a conflict.
+The automatic restack after modify uses the same output. Planning for sync
+and other callers remains quiet.
