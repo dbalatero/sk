@@ -26,7 +26,7 @@ Only sync, submit, and merge perform Git network operations or API requests.
   continue resumes; abort restores the original stack and checkout. Remote
   divergence choices use snapshots fetched by sync, without new requests.
 - log short and ls show all stacks locally with connections, current branch,
-  cached PR state, and restack indicators. No live refresh flag.
+  and restack indicators. Short output omits PR details. No live refresh flag.
 - checkout and co offer a built-in fuzzy picker when no branch is supplied.
   up/down accept a step count. From trunk, up selects among multiple stacks.
 - pr opens the cached PR in Chrome. macOS AppleScript focuses an existing
@@ -173,3 +173,21 @@ https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request-asynchronously
 All commands and their aliases expose offline help. Existing alias files
 remain unchanged; the default alias map supplies the new aliases unless
 explicitly overridden. These commands introduce no network access.
+
+## Compact short log layout
+
+The short renderer follows the packaged Graphite renderer: one row per branch,
+no connector-only rows, names aligned after the widest graph, and sibling
+stacks joined on the trunk row. Stack lanes sort by their bottom branch name.
+Use ◯ for ordinary branches and ◉ for current, including when trunk is current.
+Each lane has a terminal color; current is also bold. No redundant current
+label, PR number, or PR status appears. Keep the compact (needs restack)
+annotation. Multiple trunks have separate graphs and a (trunk) annotation.
+
+Inspected the readable minified JS renderer from Graphite npm 1.7.0 under
+/tmp/sk-graphite-inspect/1.7.0/package/graphite.js. Verified current Graphite
+1.8.6 using a fresh repository initialized by gt and five stacks created with
+gt create (heights 3, 1, 2, 4, 1). sk track adopted those existing branches
+only after the gt fixture was complete. Plain-text outputs matched exactly
+with gamma-1, delta-4, and main checked out. Fixture and captures are under
+/tmp/sk-gt-log-w9jaxmsl; no remote or browser was involved.

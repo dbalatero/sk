@@ -192,3 +192,17 @@ clean checkout and linear history. All these commands stay offline.
 
 Additional default aliases: `m modify`, `tr track`, `sp split`, `t top`, and
 `b bottom`. Existing alias files are not overwritten.
+
+
+## Compact stack log
+
+`sk ls` (`sk log short`) uses one row per branch, aligned names, and lanes
+joining at trunk. `◉` marks current; `(needs restack)` flags stale ancestry.
+PR details are omitted from the short view.
+
+```text
+◯    auth-api
+◉    auth-model
+│ ◯  docs
+◯─┘  main
+```

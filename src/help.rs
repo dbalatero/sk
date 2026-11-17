@@ -149,8 +149,8 @@ pub fn requested(args: &[String]) -> Result<bool> {
             }
             (
                 "log short",
-                "Display all tracked stacks, current branch, cached PR state\n\
-                 and local restack indicators. Alias: ls. No network requests.",
+                "Display compact stack lanes with one row per branch\n\
+                 and restack warnings. ◉ marks current. Alias: ls. Offline.",
                 "",
             )
         }

@@ -83,60 +83,88 @@ pub fn render_stacks(
     current: &str,
     color: bool,
 ) -> String {
-    let mut trunks = Vec::new();
-    for stack in stacks {
-        if !trunks.contains(&stack.trunk) {
-            trunks.push(stack.trunk.clone());
-        }
-    }
+    let mut trunks: Vec<_> = stacks.iter().map(|s| &s.trunk).collect();
+    trunks.sort();
+    trunks.dedup();
+    let multiple_trunks = trunks.len() > 1;
     let mut output = String::new();
     for trunk in trunks {
         if !output.is_empty() {
             output.push('\n');
         }
-        for (index, stack) in stacks
+        let mut group: Vec<_> = stacks
             .iter()
-            .filter(|stack| stack.trunk == trunk)
-            .enumerate()
-        {
-            let prefix = if index == 0 { "" } else { "│ " };
-            for (position, branch) in stack.branches.iter().rev().enumerate() {
-                if position > 0 {
-                    output.push_str(&format!("{prefix}│\n"));
-                }
+            .filter(|s| &s.trunk == trunk && !s.branches.is_empty())
+            .collect();
+        group.sort_by(|a, b| a.branches[0].name.cmp(&b.branches[0].name));
+        let width = 2 * group.len().max(1) + 1;
+        for (lane, stack) in group.iter().enumerate() {
+            for branch in stack.branches.iter().rev() {
                 let selected = branch.name == current;
-                let marker = if selected { "●" } else { "○" };
-                let mut row = format!("{marker} {}", branch.name);
-                if let Some(number) = branch.pr {
-                    row.push_str(&format!("  #{number}"));
-                }
-                if !branch.state.is_empty() {
-                    row.push_str(&format!("  {}", branch.state.to_lowercase()));
-                }
-                if branch.needs_restack {
-                    row.push_str("  ⚠ needs restack");
-                }
-                if selected {
-                    row.push_str("  ← current");
-                }
-                if selected && color {
-                    row = format!("\x1b[1;36m{row}\x1b[0m");
-                }
-                output.push_str(&format!("{prefix}{row}\n"));
+                let marker = if selected { "◉" } else { "◯" };
+                let graph = format!("{}{marker}", "│ ".repeat(lane));
+                let annotation = if branch.needs_restack {
+                    " (needs restack)"
+                } else {
+                    ""
+                };
+                output.push_str(&short_row(
+                    &graph,
+                    &branch.name,
+                    annotation,
+                    width,
+                    lane,
+                    color,
+                ));
             }
-            output.push_str(if index == 0 { "│\n" } else { "├─┘\n" });
         }
-        let suffix = if trunk == current {
-            "  ← current"
+        let marker = if trunk == current { "◉" } else { "◯" };
+        let graph = if group.len() > 1 {
+            format!("{marker}{}─┘", "─┴".repeat(group.len() - 2))
         } else {
-            ""
+            marker.into()
         };
-        output.push_str(&format!("◉ {trunk}{suffix}\n"));
+        let annotation = if multiple_trunks { " (trunk)" } else { "" };
+        output.push_str(&short_row(&graph, trunk, annotation, width, 0, color));
     }
     if output.is_empty() {
         output.push_str("No tracked stacks. Start one with sk create.\n");
     }
     output
+}
+
+fn short_row(
+    graph: &str,
+    name: &str,
+    annotation: &str,
+    width: usize,
+    lane: usize,
+    color: bool,
+) -> String {
+    let selected = graph.contains('◉');
+    let styled_graph: String = graph
+        .chars()
+        .enumerate()
+        .map(|(i, ch)| lane_color(&ch.to_string(), i / 2, ch == '◉', color))
+        .collect();
+    format!(
+        "{}{}{}{annotation}\n",
+        styled_graph,
+        " ".repeat(width.saturating_sub(graph.chars().count())),
+        lane_color(name, lane, selected, color)
+    )
+}
+
+fn lane_color(text: &str, lane: usize, bold: bool, color: bool) -> String {
+    if !color || text == " " {
+        return text.into();
+    }
+    let palette = [36, 33, 35, 32, 34, 31];
+    let weight = if bold { "1;" } else { "" };
+    format!(
+        "\x1b[{weight}{}m{text}\x1b[0m",
+        palette[lane % palette.len()]
+    )
 }
 
 use std::io::{IsTerminal, Write};

@@ -52,7 +52,8 @@ P8 Discover completed actions on retry to prevent duplicates.
 
 ## Visualization and browser
 
-V1 ls shows all tracked stacks, connections, current branch and PR status.
+V1 ls shows one row per branch, aligned names, stack lanes, current branch,
+and restack annotations. Short output omits PR details.
 V2 Rendering stays local.
 V3 pr uses cached URLs and defaults to the current branch.
 V4 Chrome reuses PR tabs including subpages and raises their windows.
@@ -80,7 +81,7 @@ V5 Create a tab only when no match exists; report missing cache/automation.
 - P4/P5: editor_document_has_title_blank_line_and_markdown.
 - P8: submission_retry_reuses_pr_created_before_server_error and
   lookup_reuses_existing_pr_and_encodes_branch.
-- V1: compact_view_marks_current_pr_and_stale_ancestry.
+- V1: compact_view_matches_graphite_single_row_layout.
 - V3/V5: picker_without_terminal_and_missing_pr_fail_without_side_effects.
 - V4: pr_identity_matches_subpages_but_not_other_numbers_or_hosts.
 - Picker matching: fuzzy_matches_noncontiguous_case_insensitive_characters.
@@ -162,3 +163,9 @@ Fixture: /tmp/sk-merge-live-61i3re43. No other PRs were merged.
 - W8: each command and default alias has offline help; message values that
   look like help flags are not intercepted.
 - Coverage: tests/workflow_commands.rs and tests/cli.rs. Full suite: 68 tests.
+
+
+Short-log regression tests also cover five unequal stacks, current trunk,
+multiple trunks, empty state, and identical spacing with ANSI colors removed.
+Live verification compared sk output to gt 1.8.6 on five gt-created stacks
+with three different checkouts; all plain-text comparisons matched exactly.

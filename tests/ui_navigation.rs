@@ -71,7 +71,7 @@ fn navigate_and_render_a_stack_without_a_remote() {
     let root = dir.path();
     let result = sk(root, &["ls"]);
     assert!(result.status.success(), "{result:?}");
-    assert!(String::from_utf8_lossy(&result.stdout).contains("● b"));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("◉  b"));
     assert!(sk(root, &["down"]).status.success());
     assert_eq!(git(root, &["branch", "--show-current"]), "a");
     assert!(sk(root, &["down", "5"]).status.success());
