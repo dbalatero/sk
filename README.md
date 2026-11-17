@@ -44,6 +44,11 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
+Tests run locally with `cargo test`: Git fixtures use temporary repositories
+and GitHub requests use HTTP mocks on localhost. No GitHub login or live
+repository access is needed. Tests explicitly disable submit prompts, even
+when run from a terminal. Cargo may download dependencies on the first run.
+
 ## Workflow
 
 ```sh

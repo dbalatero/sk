@@ -2,7 +2,7 @@
 use super::{SubmitOptions, edit_metadata};
 use anyhow::{Context, Result, bail};
 use crossterm::{cursor, event, execute, terminal};
-use std::io::{IsTerminal, Write};
+use std::io::Write;
 use std::path::Path;
 
 pub(super) fn color(terminal: bool) -> bool {
@@ -40,9 +40,8 @@ pub(super) async fn prepare(
     title: &str,
     body: &str,
     options: &SubmitOptions,
+    interactive: bool,
 ) -> Result<((String, String), bool)> {
-    let interactive =
-        std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     if !interactive && !options.no_edit {
         bail!("New PR prompts require a terminal; use -n (or -dn for drafts)");
     }

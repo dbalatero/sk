@@ -496,7 +496,9 @@ pub async fn run(args: &[String]) -> Result<()> {
                 .position(|s| s.branches.iter().any(|b| b.name == current))
                 .context("checkout a tracked stack branch before submitting")?;
             let client = api(&repo, &state.stacks[index].remote).await?;
-            submit(&repo, state, index, &client, options)
+            let interactive = std::io::stdin().is_terminal()
+                && std::io::stderr().is_terminal();
+            submit(&repo, state, index, &client, options, interactive)
                 .await
                 .map(|_| ())
         }
@@ -544,6 +546,7 @@ async fn submit(
     index: usize,
     client: &GitHub,
     options: SubmitOptions,
+    interactive: bool,
 ) -> Result<Vec<SubmitReport>> {
     let stack = &state.stacks[index];
     let current = repo.current().await?;
@@ -614,6 +617,7 @@ async fn submit(
                 title,
                 body,
                 &options,
+                interactive,
             )
             .await?;
             metadata.insert(branch.name.clone(), content);
@@ -1308,6 +1312,7 @@ mod tests {
                     no_edit: true,
                     ..Default::default()
                 },
+                false,
             )
             .await
             .unwrap();
@@ -1466,7 +1471,11 @@ mod tests {
             draft: true,
             no_edit: true,
         };
-        assert!(submit(&repo, state, 0, &api, options()).await.is_err());
+        assert!(
+            submit(&repo, state, 0, &api, options(), false)
+                .await
+                .is_err()
+        );
         let retry_state = repo.load().await.unwrap();
         assert!(retry_state.stacks[0].branches[0].remote_oid.is_some());
         if whole_stack {
@@ -1482,7 +1491,7 @@ mod tests {
             server.abort();
             return;
         }
-        let reports = submit(&repo, retry_state, 0, &api, options())
+        let reports = submit(&repo, retry_state, 0, &api, options(), false)
             .await
             .unwrap();
         assert_eq!(reports[0].action(), "No-op");

@@ -214,3 +214,10 @@ instead of Create. Existing leased-push and remote-change guards still apply.
 - Progress appears before replay; success appears only after ref updates.
 - Conflicts do not print success for the failed branch; continue reports
   completion after resolving it. Output stays plain when redirected.
+
+## Tests in an interactive terminal
+
+- `cargo test` must finish without user input when stdin/stderr are terminals.
+- Submit tests explicitly disable interactive preparation; only CLI dispatch
+  detects the terminal. Mock API requests remain local to 127.0.0.1.
+- Regression verified by running the full suite under a pseudo-terminal.
