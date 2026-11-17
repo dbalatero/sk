@@ -1,0 +1,19 @@
+[package]
+name = "sk"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fs2 = "0.4"
+chrono = "0.4"
+tempfile = "3"
+reqwest = { version = "0.12", features = ["json"] }
+futures = "0.3"
+crossterm = "0.29"
+shell-words = "1"
+
+[dev-dependencies]

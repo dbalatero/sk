@@ -1,0 +1,1441 @@
+//! Network operations, isolated to sync and submit.
+use anyhow::{Context, Result, bail};
+use futures::{StreamExt, stream};
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::process::Command;
+
+use crate::core::{self, PullRequest, Repository, Stack, State};
+
+#[derive(Clone)]
+pub struct GitHub {
+    client: reqwest::Client,
+    base: String,
+    repository: String,
+    token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Pull {
+    pub number: u64,
+    pub html_url: String,
+    pub state: String,
+    #[serde(default)]
+    pub draft: bool,
+    pub merged_at: Option<String>,
+    pub head: RefInfo,
+    #[serde(default)]
+    pub base: Option<RefInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RefInfo {
+    pub sha: String,
+    #[serde(rename = "ref")]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoteStack {
+    number: u64,
+    pull_requests: Vec<StackPull>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StackPull {
+    number: u64,
+    state: String,
+    merged_at: Option<String>,
+}
+
+impl Pull {
+    fn cache(&self) -> PullRequest {
+        PullRequest {
+            number: self.number,
+            url: self.html_url.clone(),
+            state: if self.merged_at.is_some() {
+                "MERGED"
+            } else if self.state == "closed" {
+                "CLOSED"
+            } else {
+                "OPEN"
+            }
+            .into(),
+            draft: self.draft,
+            head_oid: self.head.sha.clone(),
+        }
+    }
+}
+
+impl GitHub {
+    pub fn new(base: &str, repository: &str, token: String) -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base: base.trim_end_matches('/').into(),
+            repository: repository.into(),
+            token,
+        }
+    }
+
+    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+        self.client
+            .request(
+                method,
+                format!("{}/repos/{}/{}", self.base, self.repository, path),
+            )
+            .bearer_auth(&self.token)
+            .header("User-Agent", "sk/0.1")
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2026-03-10")
+            .timeout(Duration::from_secs(30))
+    }
+
+    async fn response(
+        request: reqwest::RequestBuilder,
+    ) -> Result<Option<Value>> {
+        let response = request.send().await.context("GitHub request failed")?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if status == reqwest::StatusCode::NO_CONTENT {
+            return Ok(Some(Value::Null));
+        }
+        let body = response.text().await?;
+        if !status.is_success() {
+            let parsed = serde_json::from_str::<Value>(&body).ok();
+            let mut message = parsed
+                .as_ref()
+                .and_then(|v| v["message"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unexpected API response".into());
+            if let Some(details) = parsed.as_ref().and_then(|v| v.get("errors"))
+            {
+                message.push_str(&format!(": {details}"));
+            }
+            bail!("GitHub returned {status}: {message}");
+        }
+        Ok(Some(serde_json::from_str(&body)?))
+    }
+
+    pub async fn find_open(&self, branch: &str) -> Result<Option<Pull>> {
+        let owner = self.repository.split('/').next().unwrap_or_default();
+        let head = format!("{owner}:{branch}");
+        let value = Self::response(
+            self.request(Method::GET, "pulls")
+                .query(&[("state", "open"), ("head", &head)]),
+        )
+        .await?
+        .context("repository unavailable on GitHub")?;
+        let pulls: Vec<Pull> = serde_json::from_value(value)?;
+        Ok(pulls.into_iter().find(|pr| pr.head.name == branch))
+    }
+
+    async fn pull(&self, number: u64) -> Result<Option<Pull>> {
+        Self::response(self.request(Method::GET, &format!("pulls/{number}")))
+            .await?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(Into::into)
+    }
+
+    async fn create_pull(
+        &self,
+        head: &str,
+        base: &str,
+        title: &str,
+        body: &str,
+        draft: bool,
+    ) -> Result<Pull> {
+        let value =
+            Self::response(self.request(Method::POST, "pulls").json(&json!({
+                "head": head, "base": base, "title": title,
+                "body": body, "draft": draft,
+            })))
+            .await?
+            .context("repository unavailable on GitHub")?;
+        Ok(serde_json::from_value(value)?)
+    }
+
+    async fn update_base(
+        &self,
+        number: u64,
+        base: &str,
+        allowed: &[u64],
+    ) -> Result<()> {
+        let current = self
+            .pull(number)
+            .await?
+            .context("pull request no longer exists")?;
+        if current.base.as_ref().is_some_and(|b| b.name == base) {
+            return Ok(());
+        }
+        for stack in self.stacks().await? {
+            if !stack.pull_requests.iter().any(|p| p.number == number) {
+                continue;
+            }
+            if stack.pull_requests.iter().any(|p| {
+                p.merged_at.is_none()
+                    && p.state == "open"
+                    && p.number != number
+                    && !allowed.contains(&p.number)
+            }) {
+                bail!("Remote stack has other active PRs; run sk sync");
+            }
+            let path = format!("stacks/{}/unstack", stack.number);
+            if let Some(value) =
+                Self::response(self.request(Method::POST, &path)).await?
+                && !value.is_null()
+            {
+                let remaining: RemoteStack = serde_json::from_value(value)?;
+                if remaining.pull_requests.iter().any(|p| p.number == number) {
+                    bail!(
+                        "GitHub cannot change the base of a queued/locked PR"
+                    );
+                }
+            }
+        }
+        Self::response(
+            self.request(Method::PATCH, &format!("pulls/{number}"))
+                .json(&json!({"base": base})),
+        )
+        .await?
+        .context("pull request no longer exists")?;
+        Ok(())
+    }
+
+    async fn stacks(&self) -> Result<Vec<RemoteStack>> {
+        let mut result = Vec::new();
+        for page in 1.. {
+            let value = Self::response(
+                self.request(Method::GET, "stacks")
+                    .query(&[("per_page", 100), ("page", page)]),
+            )
+            .await?
+            .context("GitHub stacks are unavailable for this repository")?;
+            let batch: Vec<RemoteStack> = serde_json::from_value(value)?;
+            let count = batch.len();
+            result.extend(batch);
+            if count < 100 {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
+    async fn publish_stack(
+        &self,
+        numbers: &[u64],
+        known: Option<u64>,
+    ) -> Result<Option<u64>> {
+        if numbers.len() < 2 {
+            return Ok(known);
+        }
+        let stacks = self.stacks().await?;
+        let mut involved = Vec::new();
+        for stack in stacks {
+            if Some(stack.number) == known
+                || stack
+                    .pull_requests
+                    .iter()
+                    .any(|p| numbers.contains(&p.number))
+            {
+                let active: Vec<u64> = stack
+                    .pull_requests
+                    .iter()
+                    .filter(|p| p.merged_at.is_none() && p.state == "open")
+                    .map(|p| p.number)
+                    .collect();
+                if active == numbers {
+                    return Ok(Some(stack.number));
+                }
+                if !active.is_empty()
+                    && numbers.starts_with(&active)
+                    && stack.pull_requests.last().map(|p| p.number)
+                        == active.last().copied()
+                {
+                    let path = format!("stacks/{}/add", stack.number);
+                    let response =
+                        Self::response(self.request(Method::POST, &path).json(
+                            &json!({"pull_requests": &numbers[active.len()..]}),
+                        ))
+                        .await;
+                    match response {
+                        Ok(Some(_)) => return Ok(Some(stack.number)),
+                        Ok(None) => bail!("stack disappeared while appending"),
+                        Err(error) => {
+                            return self.recover_stack(numbers, error).await;
+                        }
+                    }
+                }
+                if active.iter().any(|n| !numbers.contains(n)) {
+                    bail!(
+                        "remote stack {} contains other active PRs; run sync",
+                        stack.number
+                    );
+                }
+                if stack.pull_requests.iter().any(|p| p.merged_at.is_none()) {
+                    involved.push(stack);
+                }
+            }
+        }
+        for stack in involved {
+            let path = format!("stacks/{}/unstack", stack.number);
+            if let Some(value) =
+                Self::response(self.request(Method::POST, &path)).await?
+                && !value.is_null()
+            {
+                let remaining: RemoteStack = serde_json::from_value(value)?;
+                if remaining.pull_requests.iter().any(|p| {
+                    p.merged_at.is_none() && numbers.contains(&p.number)
+                }) {
+                    bail!("GitHub cannot regroup queued or locked PRs");
+                }
+            }
+        }
+        let response = Self::response(
+            self.request(Method::POST, "stacks")
+                .json(&json!({"pull_requests": numbers})),
+        )
+        .await;
+        match response {
+            Ok(Some(value)) => {
+                let created: RemoteStack = serde_json::from_value(value)?;
+                Ok(Some(created.number))
+            }
+            Ok(None) => {
+                bail!("GitHub stacks are unavailable for this repository")
+            }
+            Err(error) => self.recover_stack(numbers, error).await,
+        }
+    }
+
+    async fn recover_stack(
+        &self,
+        numbers: &[u64],
+        original_error: anyhow::Error,
+    ) -> Result<Option<u64>> {
+        // A mutation can succeed even if its response fails or races a native
+        // grouping. Rediscover before considering another mutation.
+        for attempt in 0..3 {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(200 * attempt)).await;
+            }
+            if let Ok(stacks) = self.stacks().await {
+                for stack in stacks {
+                    let active: Vec<_> = stack
+                        .pull_requests
+                        .iter()
+                        .filter(|p| p.merged_at.is_none() && p.state == "open")
+                        .map(|p| p.number)
+                        .collect();
+                    if active == numbers {
+                        return Ok(Some(stack.number));
+                    }
+                }
+            }
+        }
+        Err(original_error)
+    }
+}
+
+pub fn parse_pr_document(text: &str) -> Result<(String, String)> {
+    let mut lines = text.lines();
+    let title = lines.next().unwrap_or_default().trim();
+    if title.is_empty() {
+        bail!("PR title must not be empty");
+    }
+    if !lines.next().unwrap_or_default().trim().is_empty() {
+        bail!("line 2 must be blank; description starts on line 3");
+    }
+    Ok((
+        title.into(),
+        lines.collect::<Vec<_>>().join("\n").trim().into(),
+    ))
+}
+
+pub fn commit_metadata(messages: &[String]) -> Result<(String, String)> {
+    let first = messages.first().context("branch has no unique commits")?;
+    let mut lines = first.lines();
+    let title = lines.next().unwrap_or_default().trim().to_owned();
+    if title.is_empty() {
+        bail!("first commit has an empty subject");
+    }
+    let first_body = lines.collect::<Vec<_>>().join("\n");
+    let body = std::iter::once(first_body.trim())
+        .chain(messages.iter().skip(1).map(|m| m.trim()))
+        .filter(|m| !m.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok((title, body))
+}
+
+async fn edit_metadata(title: &str, body: &str) -> Result<(String, String)> {
+    let editor = std::env::var("EDITOR").context("set EDITOR or use -n")?;
+    let parts =
+        shell_words::split(&editor).context("invalid EDITOR command")?;
+    let executable = parts.first().context("EDITOR is empty")?;
+    let mut file = tempfile::Builder::new().suffix(".md").tempfile()?;
+    write!(file, "{title}\n\n{body}\n")?;
+    file.flush()?;
+    let result = Command::new(executable)
+        .args(&parts[1..])
+        .arg(file.path())
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .await?;
+    if !result.success() {
+        bail!("editor failed; nothing was submitted");
+    }
+    parse_pr_document(&tokio::fs::read_to_string(file.path()).await?)
+}
+
+pub fn github_repository(remote_url: &str) -> Result<String> {
+    let path = remote_url
+        .strip_prefix("git@github.com:")
+        .or_else(|| remote_url.strip_prefix("https://github.com/"))
+        .or_else(|| remote_url.strip_prefix("ssh://git@github.com/"))
+        .context("v1 requires a github.com SSH or HTTPS remote")?;
+    let path = path.trim_end_matches('/').trim_end_matches(".git");
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.len() != 2
+        || parts.iter().any(|p| {
+            p.is_empty()
+                || !p
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        })
+    {
+        bail!("invalid GitHub repository remote");
+    }
+    Ok(path.into())
+}
+
+async fn api(repo: &Repository, remote: &str) -> Result<GitHub> {
+    let url = repo.git(&["remote", "get-url", remote]).await?;
+    let repository = github_repository(url.trim())?;
+    let output = Command::new("gh")
+        .args(["auth", "token", "--hostname", "github.com"])
+        .output()
+        .await
+        .context("gh is required for authentication")?;
+    if !output.status.success() {
+        bail!("GitHub authentication unavailable; run gh auth login");
+    }
+    let token = String::from_utf8(output.stdout)?.trim().to_owned();
+    if token.is_empty() {
+        bail!("GitHub authentication returned an empty token");
+    }
+    Ok(GitHub::new("https://api.github.com", &repository, token))
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SubmitOptions {
+    draft: bool,
+    no_edit: bool,
+}
+
+fn submit_options(args: &[String]) -> Result<SubmitOptions> {
+    let mut result = SubmitOptions::default();
+    for arg in args {
+        match arg.as_str() {
+            "--stack" | "-s" => {}
+            "--draft" => result.draft = true,
+            "--no-edit" => result.no_edit = true,
+            value if value.starts_with('-') && !value.starts_with("--") => {
+                for flag in value[1..].chars() {
+                    match flag {
+                        's' => {}
+                        'd' => result.draft = true,
+                        'n' => result.no_edit = true,
+                        _ => bail!("unsupported submit flag: -{flag}"),
+                    }
+                }
+            }
+            _ => bail!("unsupported submit argument: {arg}"),
+        }
+    }
+    Ok(result)
+}
+
+pub async fn run(args: &[String]) -> Result<()> {
+    let command = args.first().context("missing remote command")?;
+    match command.as_str() {
+        "submit" | "ss" => {
+            let options = submit_options(&args[1..])?;
+            let repo = Repository::discover().await?;
+            let _lock = repo.lock()?;
+            repo.ensure_idle().await?;
+            let state = repo.load().await?;
+            let current = repo.current().await?;
+            let index = state
+                .stacks
+                .iter()
+                .position(|s| s.branches.iter().any(|b| b.name == current))
+                .context("checkout a tracked stack branch before submitting")?;
+            let client = api(&repo, &state.stacks[index].remote).await?;
+            submit(&repo, state, index, &client, options).await
+        }
+        "sync" => {
+            if args.len() != 1 {
+                bail!("sync takes no arguments");
+            }
+            sync().await
+        }
+        _ => bail!("unsupported remote command: {command}"),
+    }
+}
+
+async fn submit(
+    repo: &Repository,
+    mut state: State,
+    index: usize,
+    client: &GitHub,
+    options: SubmitOptions,
+) -> Result<()> {
+    let stack = &state.stacks[index];
+    let mut metadata = BTreeMap::new();
+    let mut snapshots = BTreeMap::new();
+    for name in std::iter::once(&stack.trunk)
+        .chain(stack.branches.iter().map(|b| &b.name))
+    {
+        let oid = repo
+            .git(&["rev-parse", &format!("refs/heads/{name}")])
+            .await?
+            .trim()
+            .to_owned();
+        snapshots.insert(name.clone(), oid);
+    }
+    let mut parent = snapshots[&stack.trunk].clone();
+    for branch in &stack.branches {
+        let head = &snapshots[&branch.name];
+        repo.git(&["merge-base", "--is-ancestor", &parent, head])
+            .await
+            .with_context(|| format!("{} needs sk restack", branch.name))?;
+        let range = format!("{parent}..{head}");
+        let messages = repo
+            .git(&["log", "--reverse", "--format=%B%x00", &range, "--"])
+            .await?;
+        let messages: Vec<String> = messages
+            .split('\0')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let content = commit_metadata(&messages)
+            .with_context(|| format!("empty branch {}", branch.name))?;
+        metadata.insert(branch.name.clone(), content);
+        parent = head.clone();
+    }
+    for branch in &mut state.stacks[index].branches {
+        if let Some(cached) = &branch.pr {
+            if let Some(pr) = client.pull(cached.number).await? {
+                if pr.merged_at.is_some() || pr.state == "closed" {
+                    bail!("{} PR is merged/closed; run sk sync", branch.name);
+                }
+                branch.pr = Some(pr.cache());
+            } else {
+                branch.pr = None;
+            }
+        }
+        if branch.pr.is_none() {
+            branch.pr =
+                client.find_open(&branch.name).await?.map(|p| p.cache());
+        }
+        if branch.pr.is_none() && !options.no_edit {
+            let (title, body) = &metadata[&branch.name];
+            let edited = edit_metadata(title, body).await?;
+            metadata.insert(branch.name.clone(), edited);
+        }
+    }
+    let stack = &state.stacks[index];
+    let mut lookup = vec![
+        "ls-remote".to_owned(),
+        "--heads".into(),
+        "--".into(),
+        stack.remote.clone(),
+    ];
+    lookup.extend(
+        stack
+            .branches
+            .iter()
+            .map(|b| format!("refs/heads/{}", b.name)),
+    );
+    let lookup: Vec<&str> = lookup.iter().map(String::as_str).collect();
+    let observed = repo.git(&lookup).await?;
+    let observed: BTreeMap<_, _> = observed
+        .lines()
+        .filter_map(|line| {
+            let (oid, name) = line.split_once('\t')?;
+            Some((name.to_owned(), oid.to_owned()))
+        })
+        .collect();
+    for (name, expected) in &snapshots {
+        let actual = repo
+            .git(&["rev-parse", &format!("refs/heads/{name}")])
+            .await?;
+        if actual.trim() != expected {
+            bail!("{name} changed while preparing submit; retry");
+        }
+    }
+    let mut args = vec!["push".to_owned(), "--atomic".into()];
+    for branch in &stack.branches {
+        let reference = format!("refs/heads/{}", branch.name);
+        let remote = observed.get(&reference);
+        if remote != branch.remote_oid.as_ref()
+            && remote != snapshots.get(&branch.name)
+        {
+            bail!("{} changed on remote; run sk sync", branch.name);
+        }
+        let expected = remote.map(String::as_str).unwrap_or_default();
+        args.push(format!("--force-with-lease={reference}:{expected}"));
+    }
+    args.push("--".into());
+    args.push(stack.remote.clone());
+    for branch in &stack.branches {
+        args.push(format!(
+            "{}:refs/heads/{}",
+            snapshots[&branch.name], branch.name
+        ));
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    repo.git(&refs)
+        .await
+        .context("atomic push failed; run sk sync")?;
+    for branch in &mut state.stacks[index].branches {
+        branch.remote_oid = Some(snapshots[&branch.name].clone());
+        branch.fetched_oid = branch.remote_oid.clone();
+    }
+    repo.save(&state).await?;
+    let mut parent = state.stacks[index].trunk.clone();
+    for position in 0..state.stacks[index].branches.len() {
+        let branch = state.stacks[index].branches[position].clone();
+        let allowed: Vec<u64> = state.stacks[index]
+            .branches
+            .iter()
+            .filter_map(|b| b.pr.as_ref().map(|p| p.number))
+            .collect();
+        let pr = match branch.pr {
+            Some(pr) => {
+                client.update_base(pr.number, &parent, &allowed).await?;
+                pr
+            }
+            None => {
+                // Rediscovery also handles a prior timed-out create response.
+                match client.find_open(&branch.name).await? {
+                    Some(pr) => {
+                        client
+                            .update_base(pr.number, &parent, &allowed)
+                            .await?;
+                        pr.cache()
+                    }
+                    None => {
+                        let (title, body) = &metadata[&branch.name];
+                        client
+                            .create_pull(
+                                &branch.name,
+                                &parent,
+                                title,
+                                body,
+                                options.draft,
+                            )
+                            .await?
+                            .cache()
+                    }
+                }
+            }
+        };
+        println!("{} {}", branch.name, pr.url);
+        state.stacks[index].branches[position].pr = Some(pr);
+        repo.save(&state).await?;
+        parent = branch.name;
+    }
+    let numbers: Vec<u64> = state.stacks[index]
+        .branches
+        .iter()
+        .filter_map(|b| b.pr.as_ref().map(|p| p.number))
+        .collect();
+    state.stacks[index].github_number = client
+        .publish_stack(&numbers, state.stacks[index].github_number)
+        .await?;
+    repo.save(&state).await?;
+    Ok(())
+}
+
+async fn sync_transform(
+    repo: &Repository,
+    stack: &Stack,
+) -> Result<(Stack, BTreeMap<String, String>, Vec<String>)> {
+    core::foreign_worktrees(repo, stack).await?;
+    let mut result = stack.clone();
+    result.branches.clear();
+    let mut heads = BTreeMap::new();
+    let mut notes = Vec::new();
+    for (position, original) in stack.branches.iter().enumerate() {
+        let mut branch = original.clone();
+        let local = repo.git(&["rev-parse", &branch.name]).await?;
+        let local = local.trim().to_owned();
+        if let Some(pr) = &branch.pr
+            && (pr.state == "MERGED" || pr.state == "CLOSED")
+        {
+            if pr.state == "CLOSED"
+                && stack.branches[position + 1..]
+                    .iter()
+                    .any(|b| b.pr.as_ref().is_none_or(|p| p.state == "OPEN"))
+            {
+                bail!(
+                    "{} is closed but has active descendants; \
+                         restructure it before cleanup",
+                    branch.name
+                );
+            }
+            if local == pr.head_oid {
+                notes.push(format!("Pruned {} ({})", branch.name, pr.state));
+                continue;
+            }
+            if pr.state == "CLOSED" {
+                bail!("{} has unpublished work after closure", branch.name);
+            }
+            repo.git(&["merge-base", "--is-ancestor", &pr.head_oid, &local])
+                .await
+                .with_context(|| {
+                    format!(
+                        "Cannot identify merged boundary for {}",
+                        branch.name
+                    )
+                })?;
+            let date = chrono::Local::now().format("%m-%d");
+            let suffix =
+                format!("{}_{}-follow-up", date, core::slug(&branch.name));
+            let mut name = suffix.clone();
+            let mut number = 2;
+            while repo
+                .git(&["show-ref", "--verify", &format!("refs/heads/{name}")])
+                .await
+                .is_ok()
+                || result.branches.iter().any(|b| b.name == name)
+            {
+                name = format!("{suffix}-{number}");
+                number += 1;
+            }
+            notes.push(format!(
+                "Moved unpublished {} work to {name}",
+                branch.name
+            ));
+            branch.base = pr.head_oid.clone();
+            branch.name = name;
+            branch.pr = None;
+            branch.remote_oid = None;
+            branch.fetched_oid = None;
+            heads.insert(branch.name.clone(), local);
+            result.branches.push(branch);
+            continue;
+        }
+        if let Some(fetched) = &branch.fetched_oid
+            && fetched != &local
+        {
+            let local_unchanged = branch.remote_oid.as_ref() == Some(&local);
+            let remote_ahead = repo
+                .git(&["merge-base", "--is-ancestor", &local, fetched])
+                .await
+                .is_ok();
+            let local_ahead = repo
+                .git(&["merge-base", "--is-ancestor", fetched, &local])
+                .await
+                .is_ok();
+            if local_unchanged || remote_ahead {
+                heads.insert(branch.name.clone(), fetched.clone());
+            } else if !local_ahead {
+                bail!("{} diverged; run sk restack", branch.name);
+            }
+        }
+        branch.remote_oid = branch.fetched_oid.clone();
+        result.branches.push(branch);
+    }
+    Ok((result, heads, notes))
+}
+
+async fn refresh_stack(
+    repo: &Repository,
+    stack: &Stack,
+    client: &GitHub,
+) -> Result<Stack> {
+    let branches = stream::iter(stack.branches.iter().cloned().map(|mut b| {
+        let client = client.clone();
+        let remote = stack.remote.clone();
+        async move {
+            let pr = match &b.pr {
+                Some(pr) => client
+                    .pull(pr.number)
+                    .await?
+                    .with_context(|| {
+                        format!("PR #{} is unavailable", pr.number)
+                    })?
+                    .into(),
+                None => client.find_open(&b.name).await?,
+            };
+            b.pr = pr.map(|p: Pull| p.cache());
+            let reference = format!("refs/remotes/{remote}/{}", b.name);
+            b.fetched_oid = repo
+                .git(&["rev-parse", "--verify", &reference])
+                .await
+                .ok()
+                .map(|oid| oid.trim().to_owned());
+            Ok::<_, anyhow::Error>(b)
+        }
+    }))
+    .buffered(8)
+    .collect::<Vec<_>>()
+    .await;
+    let mut result = stack.clone();
+    result.branches = branches.into_iter().collect::<Result<Vec<_>>>()?;
+    Ok(result)
+}
+
+async fn trunk_candidate(repo: &Repository, stack: &Stack) -> Result<String> {
+    let reference = format!("refs/remotes/{}/{}", stack.remote, stack.trunk);
+    let remote = repo
+        .git(&["rev-parse", "--verify", &reference])
+        .await?
+        .trim()
+        .to_owned();
+    let local = repo
+        .git(&["rev-parse", &stack.trunk])
+        .await?
+        .trim()
+        .to_owned();
+    if local != remote {
+        repo.git(&["merge-base", "--is-ancestor", &local, &remote])
+            .await
+            .with_context(|| {
+                format!(
+                    "Trunk {} cannot fast-forward; reconcile it first",
+                    stack.trunk
+                )
+            })?;
+        let listing = repo.git(&["worktree", "list", "--porcelain"]).await?;
+        let mut path = "";
+        for line in listing.lines() {
+            if let Some(value) = line.strip_prefix("worktree ") {
+                path = value;
+            }
+            if line == format!("branch refs/heads/{}", stack.trunk)
+                && std::path::Path::new(path) != repo.root
+            {
+                bail!("Trunk {} is checked out in {path}", stack.trunk);
+            }
+        }
+    }
+    Ok(remote)
+}
+
+async fn sync() -> Result<()> {
+    let repo = Repository::discover().await?;
+    let _lock = repo.lock()?;
+    repo.ensure_idle().await?;
+    repo.clean().await?;
+    let mut state = repo.load().await?;
+    if state.stacks.is_empty() {
+        println!("No tracked stacks; start one with sk create");
+        return Ok(());
+    }
+    core::snapshot_state(&repo, &state).await?;
+    let remotes: BTreeSet<_> =
+        state.stacks.iter().map(|s| s.remote.clone()).collect();
+    let mut clients = BTreeMap::new();
+    for remote in &remotes {
+        clients.insert(remote.clone(), api(&repo, remote).await?);
+    }
+    let fetched = stream::iter(remotes.iter().map(|remote| {
+        let repo = &repo;
+        async move {
+            repo.git(&["fetch", "--prune", "--no-tags", "--", remote])
+                .await
+                .with_context(|| format!("Failed fetching {remote}"))
+        }
+    }))
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
+    .await;
+    for result in fetched {
+        result?;
+    }
+    let refreshed =
+        stream::iter(state.stacks.iter().enumerate().map(|(index, stack)| {
+            let repo = &repo;
+            let client = &clients[&stack.remote];
+            async move { (index, refresh_stack(repo, stack, client).await) }
+        }))
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
+    let mut failures = Vec::new();
+    let mut ready = Vec::new();
+    for (index, result) in refreshed {
+        match result {
+            Ok(stack) => {
+                state.stacks[index] = stack;
+                ready.push(index);
+            }
+            Err(error) => {
+                failures.push(format!("{}: {error:#}", state.stacks[index].id))
+            }
+        }
+    }
+    // Cache remote observations even if a local stack cannot be rewritten.
+    repo.save(&state).await?;
+    let proposals = stream::iter(ready.into_iter().map(|index| {
+        let stack = state.stacks[index].clone();
+        let repo = &repo;
+        async move {
+            let result = async {
+                let (proposed, mut heads, notes) =
+                    sync_transform(repo, &stack).await?;
+                let trunk = trunk_candidate(repo, &stack).await?;
+                heads.insert(stack.trunk.clone(), trunk.clone());
+                let mut output =
+                    core::plan_stack(repo, &proposed, &heads).await?;
+                output.insert(stack.trunk.clone(), trunk);
+                Ok::<_, anyhow::Error>((proposed, output, notes))
+            }
+            .await;
+            (index, result)
+        }
+    }))
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
+    .await;
+    let mut proposals = proposals;
+    proposals.sort_by_key(|(index, _)| *index);
+    for (index, proposal) in proposals {
+        match proposal {
+            Ok((stack, heads, notes)) => {
+                let mut proposed = state.clone();
+                proposed.stacks[index] = stack;
+                core::apply_plan(&repo, &state, &proposed, &heads).await?;
+                state = repo.load().await?;
+                for note in notes {
+                    println!("{note}");
+                }
+                println!("Synced {} locally", state.stacks[index].id);
+            }
+            Err(error) => {
+                failures.push(format!("{}: {error:#}", state.stacks[index].id))
+            }
+        }
+    }
+    // Empty records are retained during indexed processing, then removed.
+    state.stacks.retain(|s| !s.branches.is_empty());
+    repo.save(&state).await?;
+    if !failures.is_empty() {
+        for failure in &failures {
+            eprintln!("Skipped {failure}");
+        }
+        bail!("{} stack(s) need attention", failures.len());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lookup_reuses_existing_pr_and_encodes_branch() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = vec![0; 8192];
+            let n = socket.read(&mut buffer).await.unwrap();
+            let request = String::from_utf8_lossy(&buffer[..n]);
+            assert!(request.contains("state=open"));
+            assert!(request.contains("head=owner%3Afeat%2Fone"));
+            let body = r#"[{"number":7,"html_url":"https://github.com/owner/repo/pull/7","state":"open","draft":true,"merged_at":null,"head":{"sha":"abc","ref":"feat/one"}}]"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let api = GitHub::new(
+            &format!("http://{address}"),
+            "owner/repo",
+            "test".into(),
+        );
+        let pull = api.find_open("feat/one").await.unwrap().unwrap();
+        assert_eq!(pull.number, 7);
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn combined_submit_flags_and_remote_urls() {
+        assert_eq!(
+            submit_options(&["-sdn".into()]).unwrap(),
+            SubmitOptions {
+                draft: true,
+                no_edit: true
+            }
+        );
+        assert!(submit_options(&["--force".into()]).is_err());
+        assert_eq!(
+            github_repository("git@github.com:owner/repo.git").unwrap(),
+            "owner/repo"
+        );
+        assert!(github_repository("https://evil.test/owner/repo").is_err());
+    }
+
+    async fn fixture() -> (tempfile::TempDir, Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let output = Command::new("git")
+            .args(["init", "-b", "main"])
+            .arg(dir.path())
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let repo = Repository::at(dir.path()).await.unwrap();
+        repo.git(&["config", "user.name", "Test"]).await.unwrap();
+        repo.git(&["config", "user.email", "test@example.invalid"])
+            .await
+            .unwrap();
+        repo.git(&["config", "commit.gpgSign", "false"])
+            .await
+            .unwrap();
+        repo.git(&["commit", "--allow-empty", "-m", "root"])
+            .await
+            .unwrap();
+        (dir, repo)
+    }
+
+    async fn add_commit(
+        repo: &Repository,
+        file: &str,
+        content: &str,
+    ) -> String {
+        tokio::fs::write(repo.root.join(file), content)
+            .await
+            .unwrap();
+        repo.git(&["add", file]).await.unwrap();
+        repo.git(&["commit", "-m", file]).await.unwrap();
+        repo.git(&["rev-parse", "HEAD"])
+            .await
+            .unwrap()
+            .trim()
+            .into()
+    }
+
+    #[tokio::test]
+    async fn merged_extra_work_becomes_followup_without_moving_refs() {
+        let (_dir, repo) = fixture().await;
+        let root = repo.git(&["rev-parse", "HEAD"]).await.unwrap();
+        repo.git(&["switch", "-c", "a"]).await.unwrap();
+        let merged = add_commit(&repo, "a.txt", "merged").await;
+        let extra = add_commit(&repo, "extra.txt", "unpublished").await;
+        let branch = core::Branch {
+            name: "a".into(),
+            base: root.trim().into(),
+            remote_oid: Some(merged.clone()),
+            fetched_oid: None,
+            pr: Some(PullRequest {
+                number: 1,
+                url: "https://github.com/o/r/pull/1".into(),
+                state: "MERGED".into(),
+                draft: false,
+                head_oid: merged.clone(),
+            }),
+        };
+        let stack = Stack {
+            id: "a".into(),
+            trunk: "main".into(),
+            remote: "origin".into(),
+            branches: vec![branch],
+            github_number: None,
+        };
+        let (proposed, heads, _) = sync_transform(&repo, &stack).await.unwrap();
+        assert_eq!(proposed.branches.len(), 1);
+        let followup = &proposed.branches[0];
+        assert!(followup.name.contains("a-follow-up"));
+        assert_eq!(followup.base, merged);
+        assert!(followup.pr.is_none());
+        assert_eq!(heads[&followup.name], extra);
+        assert_eq!(repo.git(&["rev-parse", "a"]).await.unwrap().trim(), extra);
+        assert!(
+            repo.git(&[
+                "show-ref",
+                "--verify",
+                &format!("refs/heads/{}", followup.name)
+            ])
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn divergent_stack_is_reported_without_mutation() {
+        let (_dir, repo) = fixture().await;
+        let root = repo.git(&["rev-parse", "HEAD"]).await.unwrap();
+        repo.git(&["switch", "-c", "a"]).await.unwrap();
+        let baseline = add_commit(&repo, "a.txt", "baseline").await;
+        let local = add_commit(&repo, "local.txt", "local").await;
+        repo.git(&["switch", "-c", "remote", &baseline])
+            .await
+            .unwrap();
+        let remote = add_commit(&repo, "remote.txt", "remote").await;
+        repo.git(&["switch", "a"]).await.unwrap();
+        let stack = Stack {
+            id: "a".into(),
+            trunk: "main".into(),
+            remote: "origin".into(),
+            branches: vec![core::Branch {
+                name: "a".into(),
+                base: root.trim().into(),
+                remote_oid: Some(baseline),
+                fetched_oid: Some(remote),
+                pr: None,
+            }],
+            github_number: None,
+        };
+        assert!(sync_transform(&repo, &stack).await.is_err());
+        assert_eq!(repo.git(&["rev-parse", "a"]).await.unwrap().trim(), local);
+    }
+
+    #[tokio::test]
+    async fn submission_retry_reuses_pr_created_before_server_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_dir, repo) = fixture().await;
+        let bare = tempfile::tempdir().unwrap();
+        let output = Command::new("git")
+            .args(["init", "--bare"])
+            .arg(bare.path())
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        repo.git(&["remote", "add", "origin", bare.path().to_str().unwrap()])
+            .await
+            .unwrap();
+        let root = repo.git(&["rev-parse", "main"]).await.unwrap();
+        repo.git(&["switch", "-c", "feature"]).await.unwrap();
+        let head = add_commit(&repo, "feature.txt", "feature").await;
+        let state = State {
+            version: 1,
+            stacks: vec![Stack {
+                id: "feature".into(),
+                trunk: "main".into(),
+                remote: "origin".into(),
+                branches: vec![core::Branch {
+                    name: "feature".into(),
+                    base: root.trim().into(),
+                    remote_oid: None,
+                    fetched_oid: None,
+                    pr: None,
+                }],
+                github_number: None,
+            }],
+        };
+        repo.save(&state).await.unwrap();
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let created = Arc::new(AtomicBool::new(false));
+        let creates = Arc::new(AtomicUsize::new(0));
+        let create_count = creates.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buf = [0; 4096];
+                    let n = socket.read(&mut buf).await.unwrap();
+                    if n == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buf[..n]);
+                    if let Some(end) =
+                        request.windows(4).position(|w| w == b"\r\n\r\n")
+                    {
+                        let header = String::from_utf8_lossy(&request[..end]);
+                        let len = header
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| {
+                                        value.trim().parse::<usize>().unwrap()
+                                    })
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8(request).unwrap();
+                let pull = json!({
+                    "number": 42, "html_url": "https://github.com/o/r/pull/42",
+                    "state": "open", "draft": true, "merged_at": null,
+                    "head": {"sha": head, "ref": "feature"},
+                    "base": {"sha": "root", "ref": "main"},
+                });
+                let (status, body) = if request.starts_with("POST ") {
+                    create_count.fetch_add(1, Ordering::SeqCst);
+                    created.store(true, Ordering::SeqCst);
+                    assert!(request.contains("\"draft\":true"));
+                    ("500 Internal Server Error", json!({"message":"retry"}))
+                } else if request.starts_with("PATCH ") {
+                    assert!(request.contains("\"base\":\"main\""));
+                    ("200 OK", pull)
+                } else if request.starts_with("GET /repos/o/r/pulls/42 ") {
+                    ("200 OK", pull)
+                } else if created.load(Ordering::SeqCst) {
+                    ("200 OK", json!([pull]))
+                } else {
+                    ("200 OK", json!([]))
+                };
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\
+                     Content-Type: application/json\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let api =
+            GitHub::new(&format!("http://{address}"), "o/r", "test".into());
+        let options = || SubmitOptions {
+            draft: true,
+            no_edit: true,
+        };
+        assert!(submit(&repo, state, 0, &api, options()).await.is_err());
+        let retry_state = repo.load().await.unwrap();
+        assert!(retry_state.stacks[0].branches[0].remote_oid.is_some());
+        submit(&repo, retry_state, 0, &api, options())
+            .await
+            .unwrap();
+        assert_eq!(creates.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            repo.load().await.unwrap().stacks[0].branches[0]
+                .pr
+                .as_ref()
+                .unwrap()
+                .number,
+            42
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn closed_ancestor_is_retained_for_active_descendant() {
+        let (_dir, repo) = fixture().await;
+        let root = repo.git(&["rev-parse", "main"]).await.unwrap();
+        repo.git(&["switch", "-c", "a"]).await.unwrap();
+        let a = add_commit(&repo, "a.txt", "A").await;
+        repo.git(&["switch", "-c", "b"]).await.unwrap();
+        let b = add_commit(&repo, "b.txt", "B").await;
+        let stack = Stack {
+            id: "a".into(),
+            trunk: "main".into(),
+            remote: "origin".into(),
+            branches: vec![
+                core::Branch {
+                    name: "a".into(),
+                    base: root.trim().into(),
+                    remote_oid: Some(a.clone()),
+                    fetched_oid: Some(a.clone()),
+                    pr: Some(PullRequest {
+                        number: 1,
+                        url: "https://github.com/o/r/pull/1".into(),
+                        state: "CLOSED".into(),
+                        draft: false,
+                        head_oid: a.clone(),
+                    }),
+                },
+                core::Branch {
+                    name: "b".into(),
+                    base: a.clone(),
+                    remote_oid: None,
+                    fetched_oid: None,
+                    pr: None,
+                },
+            ],
+            github_number: None,
+        };
+        let error = sync_transform(&repo, &stack).await.unwrap_err();
+        assert!(error.to_string().contains("active descendants"));
+        assert_eq!(repo.git(&["rev-parse", "a"]).await.unwrap().trim(), a);
+        assert_eq!(repo.git(&["rev-parse", "b"]).await.unwrap().trim(), b);
+    }
+
+    #[tokio::test]
+    async fn conflict_after_clean_parent_keeps_entire_stack_unchanged() {
+        let (_dir, repo) = fixture().await;
+        let root = repo.git(&["rev-parse", "main"]).await.unwrap();
+        repo.git(&["switch", "-c", "a"]).await.unwrap();
+        let a = add_commit(&repo, "a.txt", "A").await;
+        repo.git(&["switch", "-c", "b"]).await.unwrap();
+        let b = add_commit(&repo, "conflict.txt", "ours").await;
+        repo.git(&["switch", "main"]).await.unwrap();
+        add_commit(&repo, "conflict.txt", "theirs").await;
+        repo.git(&["switch", "b"]).await.unwrap();
+        let stack = Stack {
+            id: "a".into(),
+            trunk: "main".into(),
+            remote: "origin".into(),
+            branches: vec![
+                core::Branch {
+                    name: "a".into(),
+                    base: root.trim().into(),
+                    remote_oid: None,
+                    fetched_oid: None,
+                    pr: None,
+                },
+                core::Branch {
+                    name: "b".into(),
+                    base: a.clone(),
+                    remote_oid: None,
+                    fetched_oid: None,
+                    pr: None,
+                },
+            ],
+            github_number: None,
+        };
+        let (proposed, heads, _) = sync_transform(&repo, &stack).await.unwrap();
+        assert!(core::plan_stack(&repo, &proposed, &heads).await.is_err());
+        assert_eq!(repo.git(&["rev-parse", "a"]).await.unwrap().trim(), a);
+        assert_eq!(repo.git(&["rev-parse", "b"]).await.unwrap().trim(), b);
+        repo.clean().await.unwrap();
+    }
+
+    async fn mock_sequence(
+        sequence: Vec<(&'static str, u16, Value)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener =
+            tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            for (expected, status, body) in sequence {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 8192];
+                let n = socket.read(&mut buffer).await.unwrap();
+                let request = String::from_utf8_lossy(&buffer[..n]);
+                assert!(request.starts_with(expected), "{request}");
+                let body = if status == 204 {
+                    String::new()
+                } else {
+                    body.to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} Response\r\nContent-Length: {}\r\n\
+                     Content-Type: application/json\r\n\
+                     Connection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (format!("http://{address}"), task)
+    }
+
+    fn api_pull(base: &str) -> Value {
+        json!({
+            "number": 7, "html_url": "https://github.com/o/r/pull/7",
+            "state": "open", "draft": true, "merged_at": null,
+            "head": {"sha": "abcdef", "ref": "feature"},
+            "base": {"sha": "fedcba", "ref": base},
+        })
+    }
+
+    #[tokio::test]
+    async fn unchanged_base_does_not_patch_stacked_pr() {
+        let (base, server) = mock_sequence(vec![(
+            "GET /repos/o/r/pulls/7 ",
+            200,
+            api_pull("main"),
+        )])
+        .await;
+        let api = GitHub::new(&base, "o/r", "test".into());
+        api.update_base(7, "main", &[7]).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stack_creation_rediscovery_after_ambiguous_response() {
+        let stack = json!({"number": 9, "pull_requests": [
+            {"number": 7, "state": "open", "merged_at": null},
+            {"number": 8, "state": "open", "merged_at": null},
+        ]});
+        let (base, server) = mock_sequence(vec![
+            ("GET /repos/o/r/stacks?", 200, json!([])),
+            (
+                "POST /repos/o/r/stacks ",
+                422,
+                json!({"message":"Already stacked"}),
+            ),
+            ("GET /repos/o/r/stacks?", 200, json!([stack])),
+        ])
+        .await;
+        let api = GitHub::new(&base, "o/r", "test".into());
+        assert_eq!(api.publish_stack(&[7, 8], None).await.unwrap(), Some(9));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn changing_base_unstacks_before_patch() {
+        let stack = json!({"number": 9, "pull_requests": [
+            {"number": 7, "state": "open", "merged_at": null},
+        ]});
+        let (base, server) = mock_sequence(vec![
+            ("GET /repos/o/r/pulls/7 ", 200, api_pull("old")),
+            ("GET /repos/o/r/stacks?", 200, json!([stack])),
+            ("POST /repos/o/r/stacks/9/unstack ", 204, Value::Null),
+            ("PATCH /repos/o/r/pulls/7 ", 200, api_pull("main")),
+        ])
+        .await;
+        let api = GitHub::new(&base, "o/r", "test".into());
+        api.update_base(7, "main", &[7]).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn editor_document_has_title_blank_line_and_markdown() {
+        let parsed =
+            parse_pr_document("feat: auth\n\n# Why\nDetails\n").unwrap();
+        assert_eq!(parsed.0, "feat: auth");
+        assert_eq!(parsed.1, "# Why\nDetails");
+        assert!(parse_pr_document("\n\nbody").is_err());
+        assert!(parse_pr_document("title\nbody").is_err());
+    }
+
+    #[test]
+    fn metadata_uses_first_subject_and_all_remaining_messages() {
+        let messages = vec![
+            "feat: auth\n\nAuthentication details".into(),
+            "test: auth\n\nTest details".into(),
+        ];
+        assert_eq!(
+            commit_metadata(&messages).unwrap(),
+            (
+                "feat: auth".into(),
+                "Authentication details\n\ntest: auth\n\nTest details".into()
+            )
+        );
+        assert!(commit_metadata(&[]).is_err());
+    }
+}

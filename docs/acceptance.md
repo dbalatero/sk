@@ -87,7 +87,14 @@ V5 Create a tab only when no match exists; report missing cache/automation.
 ## Verification scope
 
 The named tests cover specific behavior, not every branch of each criterion.
-Remaining verification includes macOS live Chrome focus/new-tab smoke,
-whole-process termination at every journal boundary, external changes between
-Git ref publication and checkout update, and a live GitHub lifecycle smoke.
-Interactive fuzzy-picker and editor terminal behavior also need manual smoke.
+Whole-process termination at every journal boundary and external edits between
+ref publication and checkout publication require further stress coverage.
+
+Live GitHub smoke created draft PRs #1 and #2 in dbalatero/stack-test-repo,
+verified retry reuse without duplicate PRs, and completed local-only sync.
+Real terminal smoke verified fuzzy selection, cancellation and restoration.
+
+Chrome script compilation passed. Live smoke exposed a tab delimiter bug;
+the code was corrected with a regression test. Further browser interaction
+was stopped at the user's request, so the corrected focus behavior has not
+been verified live. Two previously opened smoke-test tabs were left alone.
