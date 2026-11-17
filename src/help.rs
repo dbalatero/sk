@@ -21,13 +21,15 @@ pub fn requested(args: &[String]) -> Result<bool> {
             "",
         ),
         "create" => (
-            "create [name] [-m <message>] [-a]",
+            "create [name] [-m <message>] [-a] [-i]",
             "Create a child branch from the stack tip or trunk.\n\
              Without a name, generate a date-prefixed name from the message.\n\
              Commit staged changes, or create an empty named branch.\n\
-             This command stays local.",
+             Use --insert to insert above the current branch, then run\n\
+             sk restack to move descendants onto it. This command stays local.",
             "  -m, --message <message>  Set the commit message\n\
                -a, --all                Stage all changes and untracked files\n\
+               -i, --insert             Insert before existing descendants\n\
                -am <message>            Stage all changes and set the message",
         ),
         "modify" => (

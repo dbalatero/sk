@@ -8,7 +8,8 @@ Only sync, submit, and merge perform Git network operations or API requests.
 
 - create accepts a branch name or -m message, with date-slug generated names.
   Commit staged changes, prompt about unstaged changes, and support -a.
-  Empty named branches are allowed; middle-of-stack creation is rejected.
+  Empty named branches are allowed. --insert/-i permits middle-of-stack
+  creation; descendants keep their refs until explicit sk restack.
 - submit/s publish ancestors through the current branch; ss includes
   descendants (--stack). -d creates draft PRs; -n skips
   editing. Existing PR metadata and draft state are preserved.
@@ -212,3 +213,18 @@ promise zero API reads or zero native-stack regrouping.
 Reference: submit status labels in the inspected Graphite 1.7.0 npm bundle,
 /tmp/sk-graphite-inspect/1.7.0/package/graphite.js. No Graphite service calls
 are needed for sk's output.
+
+## Insert a branch
+
+`sk create <name> --insert` (or `-i`) inserts directly above the current
+branch, preserving descendant PR associations and their original commit
+boundaries. It supports the usual staged commit, `-a`, and `-m` behavior.
+The new branch becomes current. Existing descendant refs stay untouched;
+the command prints `sk restack` instructions. This follows our explicit
+restack workflow rather than automatically rebasing during creation.
+
+At the tip it behaves like ordinary create. At trunk it inserts below the
+only existing stack, or starts a stack when none exists. Multiple stacks
+at trunk are ambiguous and fail before staging or creating anything; use
+create at the intended stack tip followed by `sk reorder --stack` instead.
+Ordinary create from trunk still starts a separate stack. No network is used.

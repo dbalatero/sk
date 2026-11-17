@@ -222,3 +222,12 @@ Submit reports each branch with Graphite-style action labels and its PR URL:
 Results appear after the branch's PR operation succeeds. A changed PR base
 reports `New parent`, or `Update code, new parent` when both changed. Fully
 unchanged branches skip pushing; remote checks still happen during submit.
+
+To add a branch in the middle, check out its intended parent and run:
+
+```sh
+sk create new-branch --insert -am "New change"
+sk restack
+```
+
+Creation leaves descendants untouched until you explicitly restack.

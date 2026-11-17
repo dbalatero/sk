@@ -340,3 +340,73 @@ fn boundary_navigation_requires_stack_choice_from_shared_trunk() {
         assert_eq!(git(p, &["branch", "--show-current"]), "main");
     }
 }
+
+#[tokio::test]
+async fn create_insert_preserves_descendants_until_restack() {
+    let dir = fixture();
+    let p = dir.path();
+    success(p, &["create", "a"]);
+    commit(p, "a", "A");
+    success(p, &["create", "b"]);
+    let b = commit(p, "b", "B");
+    success(p, &["create", "c"]);
+    let c = commit(p, "c", "C");
+    git(p, &["switch", "a"]);
+    std::fs::write(p.join("inserted"), "I").unwrap();
+    let out = success(p, &["create", "inserted", "--insert", "-am", "I"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("sk restack"));
+    let s = state(p).await;
+    let names: Vec<_> = s.stacks[0]
+        .branches
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(names, ["a", "inserted", "b", "c"]);
+    assert_eq!(git(p, &["rev-parse", "b"]), b);
+    assert_eq!(git(p, &["rev-parse", "c"]), c);
+    success(p, &["restack"]);
+    assert_eq!(git(p, &["branch", "--show-current"]), "inserted");
+    assert_eq!(git(p, &["log", "--format=%s", "inserted..b"]), "B");
+    assert_eq!(git(p, &["log", "--format=%s", "b..c"]), "C");
+    assert_eq!(git(p, &["show", "c:inserted"]), "I");
+}
+
+#[tokio::test]
+async fn create_insert_from_trunk_and_tip() {
+    let dir = fixture();
+    let p = dir.path();
+    success(p, &["create", "a", "-i"]);
+    commit(p, "a", "A");
+    success(p, &["create", "b", "-i"]);
+    commit(p, "b", "B");
+    git(p, &["switch", "main"]);
+    success(p, &["create", "bottom", "-i"]);
+    commit(p, "bottom", "bottom");
+    success(p, &["restack"]);
+    let s = state(p).await;
+    assert_eq!(s.stacks.len(), 1);
+    let names: Vec<_> = s.stacks[0]
+        .branches
+        .iter()
+        .map(|b| b.name.as_str())
+        .collect();
+    assert_eq!(names, ["bottom", "a", "b"]);
+    assert_eq!(git(p, &["show", "b:bottom"]), "bottom");
+}
+
+#[test]
+fn create_insert_rejects_ambiguous_trunk_before_staging() {
+    let dir = fixture();
+    let p = dir.path();
+    success(p, &["create", "a"]);
+    git(p, &["switch", "main"]);
+    success(p, &["create", "b"]);
+    git(p, &["switch", "main"]);
+    std::fs::write(p.join("work"), "keep").unwrap();
+    let before = git(p, &["status", "--porcelain"]);
+    let out = sk(p, &["create", "inserted", "-i", "-am", "I"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("multiple stacks"));
+    assert_eq!(git(p, &["status", "--porcelain"]), before);
+    assert_eq!(git(p, &["branch", "--show-current"]), "main");
+}

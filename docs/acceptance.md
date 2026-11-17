@@ -176,3 +176,13 @@ It verifies create, code update, unchanged, parent-only, and combined actions;
 a pre-push hook proves no-op and parent-only paths do not invoke Git push.
 The ambiguous-create retry regression verifies rediscovery reports No-op
 instead of Create. Existing leased-push and remote-change guards still apply.
+
+## Create with insertion
+
+- `create --insert` and `create -i` insert above the current branch.
+- Descendant refs stay unchanged until explicit restack; the command prints
+  that next step and keeps the new branch checked out.
+- Restack replays only descendant commits and preserves stack order.
+- Insertion works at trunk with one stack, at the tip, and with no stack.
+- Ambiguous trunk insertion fails before staging or changing checkout.
+- Existing rejection of middle creation without --insert remains intact.

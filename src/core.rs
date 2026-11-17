@@ -536,6 +536,7 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
     let mut name = None;
     let mut message = None;
     let mut all = false;
+    let mut insert = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -545,6 +546,7 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
                     Some(args.get(i).context("-m needs a message")?.clone());
             }
             "-a" | "--all" => all = true,
+            "-i" | "--insert" => insert = true,
             "-am" | "-ma" => {
                 all = true;
                 i += 1;
@@ -562,11 +564,12 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
     }
     let current = repo.current().await?;
     let mut state = repo.load().await?;
-    let index = state
+    let mut index = state
         .stacks
         .iter()
         .position(|s| s.branches.iter().any(|b| b.name == current));
     if let Some(index) = index
+        && !insert
         && state.stacks[index].branches.last().map(|b| &b.name)
             != Some(&current)
     {
@@ -597,6 +600,33 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
         }
         current.clone()
     };
+    if insert && index.is_none() {
+        let candidates: Vec<_> = state
+            .stacks
+            .iter()
+            .enumerate()
+            .filter(|(_, stack)| stack.trunk == current)
+            .map(|(index, _)| index)
+            .collect();
+        if candidates.len() > 1 {
+            bail!(
+                "Cannot insert from trunk with multiple stacks; \
+                 create at the desired stack tip, then use sk reorder --stack"
+            );
+        }
+        index = candidates.first().copied();
+    }
+    let position = index.map(|index| {
+        state.stacks[index]
+            .branches
+            .iter()
+            .position(|branch| branch.name == current)
+            .map_or(0, |position| position + 1)
+    });
+    let has_descendants =
+        index.zip(position).is_some_and(|(index, position)| {
+            position < state.stacks[index].branches.len()
+        });
     let explicit = name.is_some();
     let mut branch_name = match name {
         Some(name) => name,
@@ -669,8 +699,8 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
         fetched_oid: None,
         pr: None,
     };
-    if let Some(index) = index {
-        state.stacks[index].branches.push(branch);
+    if let Some((index, position)) = index.zip(position) {
+        state.stacks[index].branches.insert(position, branch);
     } else {
         state.stacks.push(Stack {
             id: branch_name.clone(),
@@ -687,6 +717,9 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
     }
     repo.save(&state).await?;
     println!("Created {branch_name}");
+    if has_descendants {
+        println!("Descendants need restacking. Run sk restack.");
+    }
     Ok(())
 }
 async fn restack(repo: &Repository) -> Result<()> {
