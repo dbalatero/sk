@@ -36,8 +36,9 @@ pub fn requested(args: &[String]) -> Result<bool> {
             "modify [-a] [-c] [-m <message>] [-e]",
             "Amend the current tracked branch using staged changes. Alias: m.\n\
              Empty branches create a commit instead of amending their parent.\n\
-             Descendants stay unchanged; run sk restack afterward. Offline.",
-            "  -a, --all      Stage all changes and untracked files files\n\
+             Automatically restack descendants afterward. Offline.\n\
+             Resolve conflicts with sk continue, or undo restack with sk abort.",
+            "  -a, --all      Stage all changes and untracked files\n\
                -c, --commit   Add a new commit instead of amending\n\
                -m, --message  Set the commit message\n\
                -e, --edit     Open Git's commit-message editor\n\
@@ -122,7 +123,7 @@ pub fn requested(args: &[String]) -> Result<bool> {
             "  --stack  Include all descendants in the editor",
         ),
         "restack" => (
-            "restack",
+            "restack (alias: rs)",
             "Restack against local parents. Requires a clean\n\
              checkout. Resolve cached divergence offline.\n\
              For conflicts, edit and stage files, then run sk continue.\n\

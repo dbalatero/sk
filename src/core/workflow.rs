@@ -62,6 +62,22 @@ pub(super) async fn modify(repo: &Repository, args: &[String]) -> Result<()> {
     if new_commit && message.is_none() && !edit {
         bail!("new commits need -m <message> or -e to open the editor");
     }
+    let has_descendants = position + 1 < stack.branches.len();
+    if has_descendants {
+        foreign_worktrees(repo, stack).await?;
+        if !all {
+            let unstaged = repo.git(&["diff", "--name-only"]).await?;
+            let untracked = repo
+                .git(&["ls-files", "--others", "--exclude-standard"])
+                .await?;
+            if !unstaged.is_empty() || !untracked.is_empty() {
+                bail!(
+                    "Automatic restack needs a clean checkout after commit; \
+                     stage or stash remaining changes, or use -a"
+                );
+            }
+        }
+    }
     if all {
         repo.git(&["add", "--all"]).await?;
     }
@@ -89,8 +105,11 @@ pub(super) async fn modify(repo: &Repository, args: &[String]) -> Result<()> {
         bail!("Commit failed; staged changes are retained");
     }
     println!("Modified {current}.");
-    if position + 1 < stack.branches.len() {
-        println!("Descendants need restacking. Run sk restack.");
+    if has_descendants {
+        println!("Restacking descendants...");
+        restack(repo).await.context(
+            "Modification committed; automatic restack did not finish",
+        )?;
     }
     Ok(())
 }

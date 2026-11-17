@@ -149,8 +149,12 @@ https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request-asynchronously
   message by default. -c creates a commit; -a stages all files; -m supplies a
   message; -e uses Git's editor. Combined short flags are supported. Empty
   branches create commits rather than amending their parents. New commits
-  require -m or -e. Unstaged work remains untouched without -a. Descendants
-  remain unchanged and the command directs the user to explicit restack.
+  require -m or -e. Descendants restack automatically after the commit.
+  If descendants exist, leftover unstaged/untracked work blocks before commit
+  unless -a includes it. Foreign worktrees also block before modification.
+  Restack conflicts use continue/abort; abort retains the modified commit
+  and restores descendant refs to their state before automatic restack.
+  `rs` is a built-in alias for restack, including for existing alias files.
   Patch staging, --into, and interactive rebase are outside this initial scope.
 - `track`/`tr` adopts a named local branch or current branch, recursively
   discovering parents along first-parent history. --parent overrides the first

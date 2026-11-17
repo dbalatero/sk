@@ -50,6 +50,7 @@ fn every_command_and_alias_has_offline_help() {
         "sync",
         "merge",
         "restack",
+        "rs",
         "reorder",
         "continue",
         "abort",

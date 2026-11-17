@@ -48,7 +48,7 @@ async fn state(p: &Path) -> State {
 }
 
 #[tokio::test]
-async fn modify_amends_staged_changes_and_requires_explicit_restack() {
+async fn modify_amends_staged_changes_and_restacks_descendants() {
     let dir = fixture();
     let p = dir.path();
     success(p, &["create", "a"]);
@@ -58,14 +58,12 @@ async fn modify_amends_staged_changes_and_requires_explicit_restack() {
     git(p, &["switch", "a"]);
     std::fs::write(p.join("a"), "new A").unwrap();
     git(p, &["add", "a"]);
-    std::fs::write(p.join("untracked"), "keep").unwrap();
-    let out = success(p, &["m", "-m", "amended"]);
-    assert!(String::from_utf8_lossy(&out.stdout).contains("sk restack"));
+    success(p, &["m", "-m", "amended"]);
     assert_eq!(git(p, &["rev-list", "--count", "main..a"]), "1");
-    assert_eq!(git(p, &["rev-parse", "b"]), b);
-    assert!(git(p, &["status", "--porcelain"]).contains("untracked"));
-    std::fs::remove_file(p.join("untracked")).unwrap();
-    success(p, &["restack"]);
+    assert_ne!(git(p, &["rev-parse", "b"]), b);
+    assert_eq!(git(p, &["show", "b:a"]), "new A");
+    assert_eq!(git(p, &["branch", "--show-current"]), "a");
+    success(p, &["rs"]);
     assert_eq!(
         state(p).await.stacks[0].branches[1].base,
         git(p, &["rev-parse", "a"])
@@ -409,4 +407,56 @@ fn create_insert_rejects_ambiguous_trunk_before_staging() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("multiple stacks"));
     assert_eq!(git(p, &["status", "--porcelain"]), before);
     assert_eq!(git(p, &["branch", "--show-current"]), "main");
+}
+
+#[test]
+fn modify_rejects_leftover_work_before_amending_with_descendants() {
+    let dir = fixture();
+    let p = dir.path();
+    success(p, &["create", "a"]);
+    let a = commit(p, "a", "A");
+    success(p, &["create", "b"]);
+    let b = commit(p, "b", "B");
+    git(p, &["switch", "a"]);
+    std::fs::write(p.join("a"), "new A").unwrap();
+    git(p, &["add", "a"]);
+    std::fs::write(p.join("untracked"), "keep").unwrap();
+    let before = git(p, &["status", "--porcelain"]);
+    let out = sk(p, &["m", "-m", "amended"]);
+    assert!(!out.status.success());
+    assert_eq!(git(p, &["rev-parse", "a"]), a);
+    assert_eq!(git(p, &["rev-parse", "b"]), b);
+    assert_eq!(git(p, &["status", "--porcelain"]), before);
+    success(p, &["m", "-am", "amended"]);
+    assert_eq!(git(p, &["show", "b:untracked"]), "keep");
+}
+
+#[test]
+fn modify_restack_conflicts_support_abort_and_continue() {
+    for abort in [true, false] {
+        let dir = fixture();
+        let p = dir.path();
+        success(p, &["create", "a"]);
+        commit(p, "shared", "A");
+        success(p, &["create", "b"]);
+        let b = commit(p, "shared", "B");
+        git(p, &["switch", "a"]);
+        std::fs::write(p.join("shared"), "amended A").unwrap();
+        let out = sk(p, &["m", "-am", "amended"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("sk continue"));
+        let amended = git(p, &["rev-parse", "a"]);
+        if abort {
+            success(p, &["abort"]);
+            assert_eq!(git(p, &["rev-parse", "b"]), b);
+            assert_eq!(git(p, &["show", "a:shared"]), "amended A");
+        } else {
+            std::fs::write(p.join("shared"), "resolved").unwrap();
+            git(p, &["add", "shared"]);
+            success(p, &["continue"]);
+            assert_eq!(git(p, &["show", "b:shared"]), "resolved");
+        }
+        assert_eq!(git(p, &["rev-parse", "a"]), amended);
+        assert_eq!(git(p, &["branch", "--show-current"]), "a");
+    }
 }

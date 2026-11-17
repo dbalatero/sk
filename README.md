@@ -197,7 +197,7 @@ run `sk sync` afterward to refresh and prune merged branches.
 sk m                     # amend staged changes, keeping the commit message
 sk m -am "updated"       # stage all changes and amend
 sk m -cam "next commit"  # stage all changes and add a commit
-sk restack               # explicitly replay descendants after modifying
+sk rs                    # restack after manual Git edits
 sk track                 # adopt current branch and infer its parent chain
 sk track feature -p main # choose an explicit parent
 sk top                   # jump to the stack tip
@@ -205,8 +205,12 @@ sk bottom                # jump to the first branch above trunk
 ```
 
 `modify` operates on tracked branches only. Empty branches get a new commit;
-trunk is never amended. Use `-e` for Git's message editor. It preserves
-unstaged/untracked work unless you pass `-a`, and leaves descendant refs alone.
+trunk is never amended. Use `-e` for Git's message editor. Descendants are
+automatically restacked. Resolve conflicts with `sk continue`, or use
+`sk abort` to undo the restack while keeping your amended commit.
+When descendants exist, stage or stash leftover unstaged/untracked work
+before modifying, or use `-a` to include it in the commit.
+`sk rs` is shorthand for `sk restack`.
 
 `track` changes metadata without checking out or rewriting branches. Parent
 inference follows first-parent history through existing local branches.
@@ -229,7 +233,7 @@ The original branch and its PR association stay at the top of the split.
 Commit IDs, checkout, and descendant refs stay unchanged. Split requires a
 clean checkout and linear history. All these commands stay offline.
 
-Additional default aliases: `m modify`, `tr track`, `sp split`, `t top`, and
+Additional default aliases: `rs restack`, `m modify`, `tr track`, `sp split`, `t top`, and
 `b bottom`. Existing alias files are not overwritten.
 
 

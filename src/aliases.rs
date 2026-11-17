@@ -10,6 +10,7 @@ const DEFAULTS: &str = "\
 # User entries override built-in aliases. No shell commands are executed.\n\n\
 c create\n\
 m modify\n\
+rs restack\n\
 tr track\n\
 sp split\n\
 t top\n\

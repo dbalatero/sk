@@ -149,8 +149,10 @@ Fixture: /tmp/sk-merge-live-61i3re43. No other PRs were merged.
 
 - W1: modify amends staged changes, supports new commits and combined flags,
   never amends trunk, and handles an empty tracked branch by creating a commit.
-- W2: modify preserves unstaged work and descendant refs; explicit restack
-  subsequently updates descendant boundaries.
+- W2: modify automatically replays descendants and updates their boundaries,
+  preserving checkout. Leftover work blocks before modifying unless -a is
+  used. Conflicts support continue/abort; abort retains the amended commit.
+  The built-in rs alias invokes restack and supports offline help.
 - W3: track recursively adopts existing branches, honors explicit parents and
   configured trunks, and preserves checkout, dirty files, and refs.
 - W4: ambiguous parents and sibling attachment fail without metadata changes.
