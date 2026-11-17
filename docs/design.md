@@ -191,3 +191,24 @@ gt create (heights 3, 1, 2, 4, 1). sk track adopted those existing branches
 only after the gt fixture was complete. Plain-text outputs matched exactly
 with gamma-1, delta-4, and main checked out. Fixture and captures are under
 /tmp/sk-gt-log-w9jaxmsl; no remote or browser was involved.
+
+
+## Submit action output
+
+Use Graphite-style per-branch rows: `▸ branch (Action)` followed by the PR URL.
+Labels are Create, Update code, New parent, Update code, new parent, and No-op.
+These are completed branch actions, not predictions: emit only after the PR
+operation and its state save succeed. The later native stack grouping can
+still fail, in which case the command reports that error.
+
+Creation requires a successful create-PR call. Rediscovering an existing PR
+on retry is not creation. Code updates compare observed remote refs with the
+snapshotted local heads; only differing refs enter the atomic leased push.
+If none differ, skip the push entirely. PR base changes come from successful
+base updates rather than assumptions based on local metadata. No-op means
+no code push, PR creation, or PR base change for that branch; it does not
+promise zero API reads or zero native-stack regrouping.
+
+Reference: submit status labels in the inspected Graphite 1.7.0 npm bundle,
+/tmp/sk-graphite-inspect/1.7.0/package/graphite.js. No Graphite service calls
+are needed for sk's output.

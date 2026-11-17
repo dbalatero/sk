@@ -168,13 +168,13 @@ impl GitHub {
         number: u64,
         base: &str,
         allowed: &[u64],
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let current = self
             .pull(number)
             .await?
             .context("pull request no longer exists")?;
         if current.base.as_ref().is_some_and(|b| b.name == base) {
-            return Ok(());
+            return Ok(false);
         }
         for stack in self.stacks().await? {
             if !stack.pull_requests.iter().any(|p| p.number == number) {
@@ -207,7 +207,7 @@ impl GitHub {
         )
         .await?
         .context("pull request no longer exists")?;
-        Ok(())
+        Ok(true)
     }
 
     async fn stacks(&self) -> Result<Vec<RemoteStack>> {
@@ -488,7 +488,9 @@ pub async fn run(args: &[String]) -> Result<()> {
                 .position(|s| s.branches.iter().any(|b| b.name == current))
                 .context("checkout a tracked stack branch before submitting")?;
             let client = api(&repo, &state.stacks[index].remote).await?;
-            submit(&repo, state, index, &client, options).await
+            submit(&repo, state, index, &client, options)
+                .await
+                .map(|_| ())
         }
         "sync" => {
             if args.len() != 1 {
@@ -500,13 +502,38 @@ pub async fn run(args: &[String]) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
+struct SubmitReport {
+    branch: String,
+    url: String,
+    created: bool,
+    pushed: bool,
+    parent_changed: bool,
+}
+
+impl SubmitReport {
+    fn action(&self) -> &'static str {
+        match (self.created, self.pushed, self.parent_changed) {
+            (true, _, _) => "Create",
+            (false, true, true) => "Update code, new parent",
+            (false, true, false) => "Update code",
+            (false, false, true) => "New parent",
+            (false, false, false) => "No-op",
+        }
+    }
+
+    fn line(&self) -> String {
+        format!("▸ {} ({})\n  {}", self.branch, self.action(), self.url)
+    }
+}
+
 async fn submit(
     repo: &Repository,
     mut state: State,
     index: usize,
     client: &GitHub,
     options: SubmitOptions,
-) -> Result<()> {
+) -> Result<Vec<SubmitReport>> {
     let stack = &state.stacks[index];
     let current = repo.current().await?;
     let end = if options.stack {
@@ -602,6 +629,7 @@ async fn submit(
             bail!("{name} changed while preparing submit; retry");
         }
     }
+    let mut changed = BTreeSet::new();
     let mut args = vec!["push".to_owned(), "--atomic".into()];
     for branch in &stack.branches[..end] {
         let reference = format!("refs/heads/{}", branch.name);
@@ -611,26 +639,36 @@ async fn submit(
         {
             bail!("{} changed on remote; run sk sync", branch.name);
         }
+        if remote == snapshots.get(&branch.name) {
+            continue;
+        }
+        changed.insert(branch.name.clone());
         let expected = remote.map(String::as_str).unwrap_or_default();
         args.push(format!("--force-with-lease={reference}:{expected}"));
     }
     args.push("--".into());
     args.push(stack.remote.clone());
     for branch in &stack.branches[..end] {
+        if !changed.contains(&branch.name) {
+            continue;
+        }
         args.push(format!(
             "{}:refs/heads/{}",
             snapshots[&branch.name], branch.name
         ));
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    repo.git(&refs)
-        .await
-        .context("atomic push failed; run sk sync")?;
+    if !changed.is_empty() {
+        repo.git(&refs)
+            .await
+            .context("atomic push failed; run sk sync")?;
+    }
     for branch in &mut state.stacks[index].branches[..end] {
         branch.remote_oid = Some(snapshots[&branch.name].clone());
         branch.fetched_oid = branch.remote_oid.clone();
     }
     repo.save(&state).await?;
+    let mut reports = Vec::new();
     let mut parent = state.stacks[index].trunk.clone();
     for position in 0..end {
         let branch = state.stacks[index].branches[position].clone();
@@ -638,22 +676,26 @@ async fn submit(
             .iter()
             .filter_map(|b| b.pr.as_ref().map(|p| p.number))
             .collect();
-        let pr = match branch.pr {
+        let mut created = false;
+        let mut parent_changed = false;
+        let mut pr = match branch.pr {
             Some(pr) => {
-                client.update_base(pr.number, &parent, &allowed).await?;
+                parent_changed =
+                    client.update_base(pr.number, &parent, &allowed).await?;
                 pr
             }
             None => {
                 // Rediscovery also handles a prior timed-out create response.
                 match client.find_open(&branch.name).await? {
                     Some(pr) => {
-                        client
+                        parent_changed = client
                             .update_base(pr.number, &parent, &allowed)
                             .await?;
                         pr.cache()
                     }
                     None => {
                         let (title, body) = &metadata[&branch.name];
+                        created = true;
                         client
                             .create_pull(
                                 &branch.name,
@@ -668,9 +710,18 @@ async fn submit(
                 }
             }
         };
-        println!("{} {}", branch.name, pr.url);
+        let report = SubmitReport {
+            branch: branch.name.clone(),
+            url: pr.url.clone(),
+            created,
+            pushed: changed.contains(&branch.name),
+            parent_changed,
+        };
+        pr.head_oid = snapshots[&branch.name].clone();
         state.stacks[index].branches[position].pr = Some(pr);
         repo.save(&state).await?;
+        println!("{}", report.line());
+        reports.push(report);
         parent = branch.name;
     }
     let numbers: Vec<u64> = state.stacks[index].branches[..end]
@@ -681,7 +732,7 @@ async fn submit(
         .publish_stack(&numbers, state.stacks[index].github_number)
         .await?;
     repo.save(&state).await?;
-    Ok(())
+    Ok(reports)
 }
 
 async fn sync_transform(
@@ -1132,6 +1183,126 @@ mod tests {
         assert_eq!(repo.git(&["rev-parse", "a"]).await.unwrap().trim(), local);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn submit_reports_real_actions_and_skips_noop_push() {
+        use std::os::unix::fs::PermissionsExt;
+        for action in [
+            "Create",
+            "Update code",
+            "No-op",
+            "New parent",
+            "Update code, new parent",
+        ] {
+            let (_dir, repo) = fixture().await;
+            let bare = tempfile::tempdir().unwrap();
+            assert!(
+                Command::new("git")
+                    .args(["init", "--bare"])
+                    .arg(bare.path())
+                    .output()
+                    .await
+                    .unwrap()
+                    .status
+                    .success()
+            );
+            repo.git(&[
+                "remote",
+                "add",
+                "origin",
+                bare.path().to_str().unwrap(),
+            ])
+            .await
+            .unwrap();
+            let root = repo.git(&["rev-parse", "main"]).await.unwrap();
+            repo.git(&["switch", "-c", "feature"]).await.unwrap();
+            let old = add_commit(&repo, "a.txt", "A").await;
+            if action != "Create" {
+                repo.git(&["push", "origin", "feature"]).await.unwrap();
+            }
+            if action.starts_with("Update code") {
+                add_commit(&repo, "b.txt", "B").await;
+            }
+            let hook = repo.common.join("hooks/pre-push");
+            std::fs::write(&hook, "#!/bin/sh\nprintf ran > .git/push-ran\n")
+                .unwrap();
+            std::fs::set_permissions(
+                &hook,
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            let mut pr =
+                api_pull(if action.to_lowercase().contains("parent") {
+                    "old-parent"
+                } else {
+                    "main"
+                });
+            pr["head"]["sha"] = json!(old);
+            let mut replies = if action == "Create" {
+                vec![
+                    ("GET /repos/o/r/pulls?", 200, json!([])),
+                    ("GET /repos/o/r/pulls?", 200, json!([])),
+                    ("POST /repos/o/r/pulls ", 200, pr.clone()),
+                ]
+            } else {
+                vec![
+                    ("GET /repos/o/r/pulls/7 ", 200, pr.clone()),
+                    ("GET /repos/o/r/pulls/7 ", 200, pr.clone()),
+                ]
+            };
+            if action.to_lowercase().contains("parent") {
+                replies.extend([
+                    ("GET /repos/o/r/stacks?", 200, json!([])),
+                    ("PATCH /repos/o/r/pulls/7 ", 200, pr.clone()),
+                ]);
+            }
+            let state = State {
+                version: 1,
+                stacks: vec![Stack {
+                    id: "feature".into(),
+                    trunk: "main".into(),
+                    remote: "origin".into(),
+                    github_number: None,
+                    branches: vec![core::Branch {
+                        name: "feature".into(),
+                        base: root.trim().into(),
+                        remote_oid: (action != "Create").then(|| old.clone()),
+                        fetched_oid: None,
+                        pr: (action != "Create").then(|| {
+                            serde_json::from_value::<Pull>(pr).unwrap().cache()
+                        }),
+                    }],
+                }],
+            };
+            let (base, server) = mock_sequence(replies).await;
+            let api = GitHub::new(&base, "o/r", "test".into());
+            let reports = submit(
+                &repo,
+                state,
+                0,
+                &api,
+                SubmitOptions {
+                    no_edit: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(reports[0].action(), action);
+            assert_eq!(
+                reports[0].line(),
+                format!(
+                    "▸ feature ({action})\n  https://github.com/o/r/pull/7"
+                )
+            );
+            assert_eq!(
+                repo.common.join("push-ran").exists(),
+                action == "Create" || action.starts_with("Update code")
+            );
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn submission_retry_reuses_pr_created_before_server_error() {
         check_submission_scope(false).await;
@@ -1281,9 +1452,10 @@ mod tests {
             server.abort();
             return;
         }
-        submit(&repo, retry_state, 0, &api, options())
+        let reports = submit(&repo, retry_state, 0, &api, options())
             .await
             .unwrap();
+        assert_eq!(reports[0].action(), "No-op");
         assert_eq!(creates.load(Ordering::SeqCst), 1);
         assert_eq!(
             repo.load().await.unwrap().stacks[0].branches[0]

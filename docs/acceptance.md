@@ -169,3 +169,10 @@ Short-log regression tests also cover five unequal stacks, current trunk,
 multiple trunks, empty state, and identical spacing with ANSI colors removed.
 Live verification compared sk output to gt 1.8.6 on five gt-created stacks
 with three different checkouts; all plain-text comparisons matched exactly.
+
+
+Submit reporting coverage uses a local bare Git remote and a mock GitHub API.
+It verifies create, code update, unchanged, parent-only, and combined actions;
+a pre-push hook proves no-op and parent-only paths do not invoke Git push.
+The ambiguous-create retry regression verifies rediscovery reports No-op
+instead of Create. Existing leased-push and remote-change guards still apply.

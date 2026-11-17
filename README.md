@@ -206,3 +206,19 @@ PR details are omitted from the short view.
 │ ◯  docs
 ◯─┘  main
 ```
+
+
+Submit reports each branch with Graphite-style action labels and its PR URL:
+
+```text
+▸ auth-model (No-op)
+  https://github.com/owner/repo/pull/12
+▸ auth-api (Update code)
+  https://github.com/owner/repo/pull/13
+▸ auth-tests (Create)
+  https://github.com/owner/repo/pull/14
+```
+
+Results appear after the branch's PR operation succeeds. A changed PR base
+reports `New parent`, or `Update code, new parent` when both changed. Fully
+unchanged branches skip pushing; remote checks still happen during submit.
