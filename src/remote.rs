@@ -1,4 +1,6 @@
-//! Network operations, isolated to sync and submit.
+//! Network operations, isolated to sync, submit, and merge.
+mod merge;
+
 use anyhow::{Context, Result, bail};
 use futures::{StreamExt, stream};
 use reqwest::Method;
@@ -469,6 +471,7 @@ fn submit_options(args: &[String]) -> Result<SubmitOptions> {
 pub async fn run(args: &[String]) -> Result<()> {
     let command = args.first().context("missing remote command")?;
     match command.as_str() {
+        "merge" => merge::run(&args[1..]).await,
         "submit" | "ss" => {
             let mut options = submit_options(&args[1..])?;
             if command == "ss" {
@@ -1014,7 +1017,7 @@ mod tests {
         assert!(github_repository("https://evil.test/owner/repo").is_err());
     }
 
-    async fn fixture() -> (tempfile::TempDir, Repository) {
+    pub(super) async fn fixture() -> (tempfile::TempDir, Repository) {
         let dir = tempfile::tempdir().unwrap();
         let output = Command::new("git")
             .args(["init", "-b", "main"])
@@ -1037,7 +1040,7 @@ mod tests {
         (dir, repo)
     }
 
-    async fn add_commit(
+    pub(super) async fn add_commit(
         repo: &Repository,
         file: &str,
         content: &str,

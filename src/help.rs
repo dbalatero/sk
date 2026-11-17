@@ -42,6 +42,22 @@ pub fn requested(args: &[String]) -> Result<bool> {
                --no-stack    Submit only through the current branch\n\n\
              Example: sk ss -dn",
         ),
+        "merge" => (
+            "merge [--include-current | --stack] [--dry-run]",
+            "Merge open PRs below the current branch into trunk. The current\n\
+             branch is excluded by default. Already merged PRs are skipped.\n\
+             Draft, closed, unpublished, or changed PRs block the operation.\n\
+             Uses GitHub's async stack merge API and honors merge queues/rules.\n\
+             Run sync afterward to refresh local state; no local refs change.",
+            "  --include-current  Also merge the current branch\n\
+               --stack            Merge the entire stack\n\
+               --dry-run          Fetch and show the selection without merging\n\
+               --squash           Squash each PR\n\
+               --rebase           Rebase merge\n\
+               --merge            Merge commits\n\
+             Without a method flag, GitHub chooses its default. Merge queues\n\
+             control their own method. No branch-protection bypass is used.",
+        ),
         "sync" => (
             "sync",
             "Fetch and refresh all tracked stacks, restack locally and prune\n\

@@ -125,3 +125,21 @@ instruction.
 - R5: Dirty checkout, foreign worktree, and editor-time ref changes fail
   without discarding external work.
 - Coverage: tests/reorder.rs; offline command help in tests/cli.rs.
+
+## Merge acceptance
+
+- M1: Default excludes current; include-current and stack broaden explicitly.
+- M2: Fresh API state and local heads determine eligibility. Skip merged PRs;
+  reject drafts, closed/missing PRs, changed heads, and unexpected ancestors.
+- M3: Pin the target SHA, use the async stack API, and never bypass rules.
+- M4: Poll pending requests including 409 responses. Distinguish merged from
+  queued; report failures and bounded polling exhaustion accurately.
+- M5: Dry run makes no merge request. Local refs/cache remain unchanged until
+  the user runs sync. Help is offline.
+- Mock coverage: src/remote/merge.rs; CLI help coverage: tests/cli.rs.
+
+Live acceptance used dedicated branches in dbalatero/stack-test-repo:
+PRs #4 and #5 merged through the async API with --squash; current PR #6
+remained open and GitHub retargeted it to main. A repeated dry run selected
+nothing. Sync then pruned the two merged branches and retained current #6.
+Fixture: /tmp/sk-merge-live-61i3re43. No other PRs were merged.

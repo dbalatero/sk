@@ -32,8 +32,8 @@ sk up
 sk pr
 ```
 
-Only `sync` and `submit` perform Git/API network operations. Local commands
-use cached PR information. `sync` and `restack` require a clean checkout.
+Only `sync`, `submit`, and `merge` perform Git/API network operations.
+Local commands use cached PR information. `sync` and `restack` require a clean checkout.
 Use `sk continue` after resolving and staging rebase conflicts, or `sk abort`
 to restore the original stack.
 
@@ -132,3 +132,22 @@ editor using `GIT_EDITOR`, `git config core.editor`, or `EDITOR`.
 On conflicts, resolve and stage changes, then run `sk continue`. Use
 `sk abort` to restore the original stack. Reorder is offline and requires a
 clean checkout. Adding/removing lines is unsupported by sk's linear model.
+
+## Merge
+
+`sk merge` merges open PRs below the current branch into trunk, excluding the
+current branch. Already merged PRs are skipped. `--include-current` includes
+the current branch; `--stack` selects the whole stack. Use `--dry-run` to
+fetch and preview the exact selection without submitting a merge request.
+
+GitHub chooses the default merge method, or specify one of `--squash`,
+`--rebase`, or `--merge`. The async stack merge API honors repository rules
+and routes to a merge queue when configured. A queued result is reported as
+queued, not merged. Draft or closed PRs, unpublished work, and mismatched
+local/remote stack order block the request. The target head SHA is pinned.
+
+The command polls for completion for up to 60 attempts, one second apart
+(plus request time). If still pending, rerunning resumes an existing request
+when GitHub returns its ID. An ambiguous network error reports uncertainty;
+check GitHub before retrying. Local refs and cached PR state are unchanged:
+run `sk sync` afterward to refresh and prune merged branches.

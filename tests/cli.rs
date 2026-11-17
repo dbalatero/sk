@@ -38,6 +38,7 @@ fn every_command_and_alias_has_offline_help() {
         "s",
         "ss",
         "sync",
+        "merge",
         "restack",
         "reorder",
         "continue",

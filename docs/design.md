@@ -2,7 +2,7 @@
 
 sk is an async Rust, local-first CLI for linear stacked branches. sk owns
 local state and recovery. GitHub's public REST APIs own published PR stacks.
-Only sync and submit perform Git network operations or API requests.
+Only sync, submit, and merge perform Git network operations or API requests.
 
 ## Commands
 
@@ -115,3 +115,29 @@ Native `reorder --help` and a disposable repository probe confirmed the editor
 layout, scope, and sibling behavior when a line is removed. See also
 https://graphite.com/docs/command-reference and
 https://graphite.com/docs/edit-branch-order.
+
+## Merge
+
+Merge is an explicit addition to the network-command allowlist. Default scope
+is all branches strictly below current, excluding current. --include-current
+adds current; --stack includes descendants; --dry-run performs read-only API
+validation and prints the selection. No browser or interactive confirmation
+is involved. A bottom branch with default scope exits without authentication.
+
+Fresh PR data determines eligibility. Skip already merged PRs; closed/draft
+or missing PRs block. Selected open heads must match local commits, and the
+remote stack's unmerged prefix must exactly match the selection so GitHub
+cannot implicitly include unexpected PRs. A standalone PR is supported only
+when it targets the configured trunk. Never automatically submit local work.
+
+Use PUT pulls/{number}/merge-async with the target SHA, merge_action=default,
+and bypass_rules=false. Optional method flags choose merge/squash/rebase;
+otherwise omit the method for GitHub's default. Poll the returned UUID using
+GET pulls/{number}/merge-async/{uuid}. Treat an existing pending request (409)
+as resumable, not permission to submit again. Distinguish merged, enqueued,
+failed, and pending. Polling is bounded; failed/unknown outcomes are errors.
+No local refs or PR cache are changed by merge; sync owns refresh and pruning.
+
+Sources: GitHub's public async merge API documentation and github/gh-stack's
+internal/github/merge_async.go, inspected in /tmp/sk-gh-stack-merge-inspect.
+https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request-asynchronously
