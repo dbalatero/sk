@@ -98,3 +98,17 @@ Chrome script compilation passed. Live smoke exposed a tab delimiter bug;
 the code was corrected with a regression test. Further browser interaction
 was stopped at the user's request, so the corrected focus behavior has not
 been verified live. Two previously opened smoke-test tabs were left alone.
+
+Additional recovery coverage:
+
+- transaction_recovery_before_and_after_refs exercises continue and abort
+  from persisted journals both before and after ref publication.
+- interrupted_transaction_rejects_external_ref_update preserves changes
+  made outside the interrupted operation.
+- reconciliation_conflict_can_continue_or_abort_entire_operation exercises
+  a conflicting fetched-remote/local reconciliation, on-disk continuation,
+  the normal stack cascade afterward, and complete abort restoration.
+
+These deterministic journal fixtures test recovery boundary states. They do
+not constitute exhaustive kill-process fault injection at every filesystem
+instruction.

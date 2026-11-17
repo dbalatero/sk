@@ -49,3 +49,11 @@ V1 supports new stacks, macOS, GitHub.com, and Git 2.56 or newer. Reuse gh
 credentials without invoking gh stack. No import workflow, sibling branches,
 or background update checks. Preserve PR identity when regrouping remote
 stacks; respect queued PR restrictions. Retry partial submissions by discovery.
+
+## Offline divergence reconciliation
+
+Restack offers local, fetched remote, replay, or cancel choices. Replay uses
+cached commit IDs only. The last published remote commit must remain an
+ancestor of the local tip, and the recorded branch base must be an ancestor
+of the fetched tip. When those boundaries cannot be proven, choose local or
+remote explicitly rather than guessing which changes should survive.
