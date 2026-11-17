@@ -220,7 +220,10 @@ pub async fn run(args: &[String]) -> Result<()> {
             };
             switch(&repo, &target).await?;
         }
-        "up" | "down" => {
+        "up" | "down" | "top" | "bottom" => {
+            if matches!(command, "top" | "bottom") && args.len() != 1 {
+                bail!("usage: sk {command}");
+            }
             if args.len() > 2 {
                 bail!("usage: sk {command} [steps]");
             }
@@ -253,13 +256,20 @@ pub async fn run(args: &[String]) -> Result<()> {
                     .iter()
                     .map(|branch| branch.name.clone())
                     .collect();
-                if let Some(target) = navigation_target(
-                    &branches,
-                    &stack.trunk,
-                    &current,
-                    command == "up",
-                    steps,
-                ) && !choices.iter().any(|(name, _)| name == &target)
+                let boundary = match command {
+                    "top" => branches.last().cloned(),
+                    "bottom" => branches.first().cloned(),
+                    _ => None,
+                };
+                if let Some(target) = boundary.or_else(|| {
+                    navigation_target(
+                        &branches,
+                        &stack.trunk,
+                        &current,
+                        command == "up",
+                        steps,
+                    )
+                }) && !choices.iter().any(|(name, _)| name == &target)
                 {
                     choices.push((target.clone(), target));
                 }

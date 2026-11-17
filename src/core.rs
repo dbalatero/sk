@@ -1,4 +1,5 @@
 mod reorder;
+mod workflow;
 
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
@@ -187,6 +188,9 @@ pub async fn run(args: &[String]) -> Result<()> {
     let repo = Repository::discover().await?;
     let _lock = repo.lock()?;
     match args.first().map(String::as_str) {
+        Some("modify") => workflow::modify(&repo, &args[1..]).await,
+        Some("track") => workflow::track(&repo, &args[1..]).await,
+        Some("split") => workflow::split(&repo, &args[1..]).await,
         Some("create") => create(&repo, &args[1..]).await,
         Some("reorder") => reorder::run(&repo, &args[1..]).await,
         Some("restack") => restack(&repo).await,

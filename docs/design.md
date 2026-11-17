@@ -141,3 +141,35 @@ No local refs or PR cache are changed by merge; sync owns refresh and pruning.
 Sources: GitHub's public async merge API documentation and github/gh-stack's
 internal/github/merge_async.go, inspected in /tmp/sk-gh-stack-merge-inspect.
 https://docs.github.com/en/rest/pulls/pulls#merge-a-pull-request-asynchronously
+
+## Modify, track, split, and boundary navigation
+
+- `modify`/`m` amends the current tracked branch's last commit, preserving its
+  message by default. -c creates a commit; -a stages all files; -m supplies a
+  message; -e uses Git's editor. Combined short flags are supported. Empty
+  branches create commits rather than amending their parents. New commits
+  require -m or -e. Unstaged work remains untouched without -a. Descendants
+  remain unchanged and the command directs the user to explicit restack.
+  Patch staging, --into, and interactive rebase are outside this initial scope.
+- `track`/`tr` adopts a named local branch or current branch, recursively
+  discovering parents along first-parent history. --parent overrides the first
+  parent choice. Ambiguous names at a commit require explicit selection. It
+  records existing boundaries without rewriting refs or changing checkout,
+  preserving dirty work. Existing tracked parents must be stack tips. Trunk
+  comes from sk.trunk, cached origin/HEAD, or an unambiguous main/master.
+- `split`/`sp` supports commit boundaries only. The editor lists full SHAs and
+  generated branch names oldest first. Keeping a line creates a boundary;
+  deleting it groups commits with the next boundary. The original branch and
+  tip must remain last, retaining its PR metadata. --each skips the editor
+  and selects every boundary. Generated names derive from branch and commit
+  subjects with numeric suffixes for collisions. No commits are rewritten.
+  Ref additions and metadata use the existing transactional recovery path.
+  Dirty worktrees, non-linear history, invalid edits, and occupied worktrees
+  are rejected. Original checkout and descendant tips are preserved.
+- `top`/`t` selects the tip; `bottom`/`b` selects the first branch above trunk,
+  not trunk itself. From a trunk shared by stacks, reuse the interactive stack
+  selector. Checkout uses Git's normal protection for uncommitted work.
+
+All commands and their aliases expose offline help. Existing alias files
+remain unchanged; the default alias map supplies the new aliases unless
+explicitly overridden. These commands introduce no network access.

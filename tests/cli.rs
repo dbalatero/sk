@@ -32,6 +32,16 @@ fn every_command_and_alias_has_offline_help() {
     let directory = tempfile::tempdir().unwrap();
     for command in [
         "create",
+        "modify",
+        "m",
+        "track",
+        "tr",
+        "split",
+        "sp",
+        "top",
+        "t",
+        "bottom",
+        "b",
         "c",
         "aliases",
         "submit",
@@ -140,8 +150,14 @@ fn aliases_creates_defaults_without_overwriting_edits() {
 fn aliases_expand_with_arguments_and_offline_help() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir(directory.path().join("sk")).unwrap();
-    std::fs::write(directory.path().join("sk/aliases"),
-        "# my aliases:\nss stack --submit\nfdsa create\nnext fdsa\nmsg create -m 'hello world'\n").unwrap();
+    std::fs::write(
+        directory.path().join("sk/aliases"),
+        concat!(
+            "# my aliases:\nss stack --submit\nfdsa create\nnext fdsa\n",
+            "msg create -m 'hello world'\n",
+        ),
+    )
+    .unwrap();
     for (command, expected) in [
         ("c", "create"),
         ("s", "submit"),

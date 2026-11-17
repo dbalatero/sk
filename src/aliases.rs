@@ -9,6 +9,11 @@ const DEFAULTS: &str = "\
 # Lines starting with # are ignored. Quoted arguments are supported.\n\
 # User entries override built-in aliases. No shell commands are executed.\n\n\
 c create\n\
+m modify\n\
+tr track\n\
+sp split\n\
+t top\n\
+b bottom\n\
 s submit\n\
 ss submit --stack\n\
 ls log short\n\

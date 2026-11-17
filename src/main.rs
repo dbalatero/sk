@@ -25,6 +25,10 @@ async fn run() -> Result<()> {
                 "Commands:\n",
                 "  create | c [name] [-m message] [-a]\n",
                 "  submit | s | ss [-dn] [--stack]\n",
+                "  modify | m [-a] [-c] [-m message] [-e]\n",
+                "  track [branch] [--parent parent]\n",
+                "  split --by-commit [--each]\n",
+                "  top | bottom\n",
                 "  sync\n",
                 "  merge [--include-current | --stack] [--dry-run]\n",
                 "  aliases\n",
@@ -44,15 +48,17 @@ async fn run() -> Result<()> {
             println!("sk {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        Some("create" | "reorder" | "restack" | "continue" | "abort") => {
-            sk::core::run(&args).await
-        }
+        Some(
+            "create" | "modify" | "track" | "split" | "reorder" | "restack"
+            | "continue" | "abort",
+        ) => sk::core::run(&args).await,
         Some("sync" | "submit" | "ss" | "merge") => {
             sk::remote::run(&args).await
         }
-        Some("log" | "ls" | "checkout" | "co" | "up" | "down" | "pr") => {
-            sk::ui::run(&args).await
-        }
+        Some(
+            "log" | "ls" | "checkout" | "co" | "up" | "down" | "top" | "bottom"
+            | "pr",
+        ) => sk::ui::run(&args).await,
         Some(command) => bail!("unknown command {command:?}; run sk --help"),
     }
 }

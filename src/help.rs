@@ -27,8 +27,51 @@ pub fn requested(args: &[String]) -> Result<bool> {
              Commit staged changes, or create an empty named branch.\n\
              This command stays local.",
             "  -m, --message <message>  Set the commit message\n\
-               -a, --all                Stage all changes, including untracked\n\
+               -a, --all                Stage all changes and untracked files\n\
                -am <message>            Stage all changes and set the message",
+        ),
+        "modify" => (
+            "modify [-a] [-c] [-m <message>] [-e]",
+            "Amend the current tracked branch using staged changes. Alias: m.\n\
+             Empty branches create a commit instead of amending their parent.\n\
+             Descendants stay unchanged; run sk restack afterward. Offline.",
+            "  -a, --all      Stage all changes and untracked files files\n\
+               -c, --commit   Add a new commit instead of amending\n\
+               -m, --message  Set the commit message\n\
+               -e, --edit     Open Git's commit-message editor\n\
+             Short flags combine: sk m -cam 'new commit'",
+        ),
+        "track" => (
+            "track [branch] [-p <parent>]",
+            "Adopt an existing local branch (default: current). Alias: tr.\n\
+             Infer parents along first-parent history, recursively tracking\n\
+             intermediate local branches. Ambiguous parents require -p.\n\
+             Tracked parents must be stack tips (no siblings).\n\
+             Uses sk.trunk, cached origin/HEAD, or main/master. No fetch or\n\
+             checkout occurs, and uncommitted changes are preserved.",
+            "  -p, --parent <branch>  Explicit parent for the selected branch",
+        ),
+        "split" => (
+            "split --by-commit [--each]",
+            "Split the current branch at commit boundaries. Alias: sp.\n\
+             Opens the Git-selected editor with oldest commits first. Delete\n\
+             lines to group commits; edit names for new branches. Keep the\n\
+             final line's original tip and branch. Commits are not rewritten.\n\
+             Requires a clean checkout and linear history. Stays offline.",
+            "  -c, --commit, --by-commit  Select commit splitting (default)\n\
+               --each                    One branch per commit, without editor",
+        ),
+        "top" => (
+            "top",
+            "Check out the tip of the current stack. Alias: t.\n\
+             From trunk, choose a stack if needed. Stays offline.",
+            "",
+        ),
+        "bottom" => (
+            "bottom",
+            "Check out the first branch above trunk in the current stack.\n\
+             Alias: b. From trunk, choose a stack if needed. Stays offline.",
+            "",
         ),
         "submit" | "ss" => (
             "submit [-d] [-n] [-s]",
@@ -47,11 +90,11 @@ pub fn requested(args: &[String]) -> Result<bool> {
             "Merge open PRs below the current branch into trunk. The current\n\
              branch is excluded by default. Already merged PRs are skipped.\n\
              Draft, closed, unpublished, or changed PRs block the operation.\n\
-             Uses GitHub's async stack merge API and honors merge queues/rules.\n\
+             Uses GitHub async stack merge and honors merge queues/rules.\n\
              Run sync afterward to refresh local state; no local refs change.",
             "  --include-current  Also merge the current branch\n\
                --stack            Merge the entire stack\n\
-               --dry-run          Fetch and show the selection without merging\n\
+               --dry-run          Fetch and preview without merging\n\
                --squash           Squash each PR\n\
                --rebase           Rebase merge\n\
                --merge            Merge commits\n\
@@ -62,37 +105,37 @@ pub fn requested(args: &[String]) -> Result<bool> {
             "sync",
             "Fetch and refresh all tracked stacks, restack locally and prune\n\
              eligible merged or closed branches. Requires a clean checkout.\n\
-             Conflicting stacks remain unchanged; use restack to resolve them.\n\
+             Conflicting stacks stay unchanged; use restack to resolve.\n\
              Sync accesses GitHub but never pushes or changes remote PRs.",
             "",
         ),
         "reorder" => (
             "reorder [--stack]",
-            "Open an editor to reorder branches from trunk through the current\n\
+            "Edit branch order from trunk through the current\n\
              branch, then restack descendants. Lines run from tip to trunk.\n\
-             Keep each branch exactly once; additions/removals are unsupported.\n\
-             Requires a clean checkout. Resolve conflicts with continue/abort.\n\
+             Keep each branch exactly once; no additions or removals.\n\
+             Requires a clean checkout. Use continue/abort for conflicts.\n\
              Uses GIT_EDITOR, core.editor, or EDITOR. Stays offline.",
             "  --stack  Include all descendants in the editor",
         ),
         "restack" => (
             "restack",
-            "Restack the current stack against local parents. Requires a clean\n\
-             checkout. Resolve cached divergence interactively without fetching.\n\
-             For rebase conflicts, edit and stage files, then run sk continue.\n\
-             Run sk abort to restore the original stack. This command is offline.",
+            "Restack against local parents. Requires a clean\n\
+             checkout. Resolve cached divergence offline.\n\
+             For conflicts, edit and stage files, then run sk continue.\n\
+             Run sk abort to restore the original stack. Stays offline.",
             "",
         ),
         "continue" => (
             "continue",
             "Resume an interrupted local operation. After resolving rebase\n\
-             conflicts, stage the resolution with git add first. Stays offline.",
+             conflicts, stage resolved files with git add. Stays offline.",
             "",
         ),
         "abort" => (
             "abort",
             "Abort the interrupted local operation and restore its original\n\
-             stack and checkout. External changes may require manual attention.\n\
+             stack and checkout. External edits may need manual attention.\n\
              This command stays offline.",
             "",
         ),
@@ -133,9 +176,9 @@ pub fn requested(args: &[String]) -> Result<bool> {
         ),
         "pr" => (
             "pr [branch]",
-            "Open the cached PR for a branch (default: current branch) in Chrome.\n\
-             On macOS, focus an existing tab for that PR before opening a new one.\n\
-             No GitHub API lookup is performed; sync or submit refreshes the cache.",
+            "Open a branch’s cached PR in Chrome (default: current branch).\n\
+             On macOS, reuse an existing PR tab when possible.\n\
+             No API lookup; sync or submit refreshes the cache.",
             "",
         ),
         _ => bail!("unknown command {name:?}; run sk --help"),
@@ -159,7 +202,17 @@ fn has_help_flag(command: &str, args: &[String]) -> bool {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--" => break,
-            "-m" | "--message" | "-am" | "-ma" if command == "create" => {
+            "-m" | "--message" | "-am" | "-ma"
+                if matches!(command, "create" | "modify") =>
+            {
+                args.next();
+            }
+            value
+                if command == "modify"
+                    && value.starts_with('-')
+                    && !value.starts_with("--")
+                    && value.ends_with('m') =>
+            {
                 args.next();
             }
             "--help" | "-h" => return true,

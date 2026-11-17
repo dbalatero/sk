@@ -151,3 +151,44 @@ The command polls for completion for up to 60 attempts, one second apart
 when GitHub returns its ID. An ambiguous network error reports uncertainty;
 check GitHub before retrying. Local refs and cached PR state are unchanged:
 run `sk sync` afterward to refresh and prune merged branches.
+
+## Edit and adopt branches
+
+```sh
+sk m                     # amend staged changes, keeping the commit message
+sk m -am "updated"       # stage all changes and amend
+sk m -cam "next commit"  # stage all changes and add a commit
+sk restack               # explicitly replay descendants after modifying
+sk track                 # adopt current branch and infer its parent chain
+sk track feature -p main # choose an explicit parent
+sk top                   # jump to the stack tip
+sk bottom                # jump to the first branch above trunk
+```
+
+`modify` operates on tracked branches only. Empty branches get a new commit;
+trunk is never amended. Use `-e` for Git's message editor. It preserves
+unstaged/untracked work unless you pass `-a`, and leaves descendant refs alone.
+
+`track` changes metadata without checking out or rewriting branches. Parent
+inference follows first-parent history through existing local branches.
+Ambiguous parents require `--parent`. A tracked parent must be a stack tip;
+sibling branches within a stack remain unsupported. For a custom trunk, set
+`git config sk.trunk <branch>`.
+
+## Split by commit
+
+`sk split --by-commit` opens an editor listing commits oldest first. Each line
+contains a full SHA and the name of the branch ending at that commit. Delete
+lines to group commits together, and edit new branch names as desired. Keep
+the final line's original branch name and tip. Alternatively:
+
+```sh
+sk split --by-commit --each  # one branch per commit, no editor
+```
+
+The original branch and its PR association stay at the top of the split.
+Commit IDs, checkout, and descendant refs stay unchanged. Split requires a
+clean checkout and linear history. All these commands stay offline.
+
+Additional default aliases: `m modify`, `tr track`, `sp split`, `t top`, and
+`b bottom`. Existing alias files are not overwritten.

@@ -143,3 +143,22 @@ PRs #4 and #5 merged through the async API with --squash; current PR #6
 remained open and GitHub retargeted it to main. A repeated dry run selected
 nothing. Sync then pruned the two merged branches and retained current #6.
 Fixture: /tmp/sk-merge-live-61i3re43. No other PRs were merged.
+
+## Editing and adopting branches
+
+- W1: modify amends staged changes, supports new commits and combined flags,
+  never amends trunk, and handles an empty tracked branch by creating a commit.
+- W2: modify preserves unstaged work and descendant refs; explicit restack
+  subsequently updates descendant boundaries.
+- W3: track recursively adopts existing branches, honors explicit parents and
+  configured trunks, and preserves checkout, dirty files, and refs.
+- W4: ambiguous parents and sibling attachment fail without metadata changes.
+- W5: split supports one branch per commit and editor-selected commit groups;
+  preserves commit IDs, original PR association, checkout, and descendants.
+- W6: invalid split documents and editor failure leave refs/state unchanged;
+  generated names avoid existing refs and collisions between commit subjects.
+- W7: top/bottom select stack endpoints, preserve compatible dirty changes,
+  and require a stack selection when invoked from a shared trunk.
+- W8: each command and default alias has offline help; message values that
+  look like help flags are not intercepted.
+- Coverage: tests/workflow_commands.rs and tests/cli.rs. Full suite: 68 tests.
