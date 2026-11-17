@@ -46,9 +46,24 @@ and [acceptance criteria](docs/acceptance.md) for scope and verification.
 
 ## Nix
 
-Build or run from this checkout:
+With Nix installed and the `nix-command` and `flakes` experimental features
+enabled, install `sk` into your user profile:
 
 ```sh
+nix profile install github:dbalatero/sk
+sk --help
+```
+
+Or run it without installing:
+
+```sh
+nix run github:dbalatero/sk -- --help
+```
+
+To install, build, or run from this checkout:
+
+```sh
+nix profile install .
 nix build
 nix run . -- --help
 ```
@@ -75,14 +90,11 @@ Pass `inputs` through `extraSpecialArgs`, then add to your home module:
 }
 ```
 
-Until the flake is pushed to GitHub, use
-`git+file:///Users/dbalatero/code/sk` as the input URL. Git inputs pin a
-commit, so commit local changes before updating your configuration's lock:
+To update the Home Manager input, run this from your configuration's flake
+directory, then rebuild your Home Manager configuration:
 
 ```sh
-cd ~/.config/nixpkgs
 nix flake update sk
-./bin/switch
 ```
 
 The package includes the tools needed for authentication; sign in separately
