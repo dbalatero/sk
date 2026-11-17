@@ -1,3 +1,5 @@
+mod help;
+
 use anyhow::{Result, bail};
 
 #[tokio::main]
@@ -10,10 +12,14 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if help::requested(&args)? {
+        return Ok(());
+    }
     match args.first().map(String::as_str) {
         None | Some("help" | "--help" | "-h") => {
             println!(concat!(
                 "sk — local-first stacked branches\n\n",
+                "Usage: sk <command> [options]\n\n",
                 "Commands:\n",
                 "  create [name] [-m message] [-a]\n",
                 "  submit | ss [-dn] [--stack]\n",
@@ -23,6 +29,7 @@ async fn run() -> Result<()> {
                 "  checkout [branch] | co [branch]\n",
                 "  up [n] | down [n]\n",
                 "  pr [branch]\n\n",
+                "Use sk <command> --help for command options.\n",
                 "Only sync and submit access GitHub."
             ));
             Ok(())
