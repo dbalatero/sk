@@ -56,10 +56,10 @@ pub(super) async fn prepare(
             eprintln!("\nDefault description:\n{}\n", metadata.1);
             if choose(
                 "Body",
-                ["Edit Body ($EDITOR)", "Use default description"],
+                ["Use default description", "Edit Body ($EDITOR)"],
             )
             .await?
-                == 0
+                == 1
             {
                 metadata = edit_metadata(&metadata.0, &metadata.1).await?;
             }

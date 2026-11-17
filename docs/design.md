@@ -246,10 +246,10 @@ The formula's offline smoke test creates and renders a local branch.
 
 ## Submit prompts, templates, and colors
 
-New PRs offer Edit Body / Use default description, followed by Publish Pull
+New PRs offer Use default description / Edit Body, followed by Publish Pull
 Request / Create Draft Pull Request. Arrow keys, j/k, or Tab change the
-choice; Enter accepts. Editing is initially selected, and publishing is
-the initial submit choice, matching Graphite. Existing PRs are not prompted
+choice; Enter accepts. Use default description is initially selected, and
+publishing is the initial submit choice. Existing PRs are not prompted
 and keep title, body, and draft state. Choices for the entire submission
 are gathered before pushing or mutating GitHub; Escape/Ctrl-C cancels.
 
