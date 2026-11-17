@@ -200,3 +200,10 @@ instead of Create. Existing leased-push and remote-change guards still apply.
 - Changed branches are cyan, no-ops dim, and URLs blue; redirected output
   and NO_COLOR remain plain.
 - Mock API tests check that draft and template body reach PR creation.
+
+## Create respects staged selection
+
+- With staged changes, create never prompts to stage additional work.
+- Partially staged files commit only their indexed content; unstaged and
+  untracked work remain untouched. Explicit -a still includes all changes.
+- An empty index retains the interactive staging prompt.

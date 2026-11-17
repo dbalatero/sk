@@ -7,7 +7,8 @@ Only sync, submit, and merge perform Git network operations or API requests.
 ## Commands
 
 - create accepts a branch name or -m message, with date-slug generated names.
-  Commit staged changes, prompt about unstaged changes, and support -a.
+  Commit staged changes without prompting to include other work. Only
+  prompt to stage when the index is empty. Explicit -a stages all changes.
   Empty named branches are allowed. --insert/-i permits middle-of-stack
   creation; descendants keep their refs until explicit sk restack.
 - submit/s publish ancestors through the current branch; ss includes

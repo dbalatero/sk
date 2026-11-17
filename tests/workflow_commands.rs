@@ -460,3 +460,62 @@ fn modify_restack_conflicts_support_abort_and_continue() {
         assert_eq!(git(p, &["branch", "--show-current"]), "a");
     }
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn create_with_staged_changes_skips_terminal_staging_prompt() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let dir = fixture();
+    let p = dir.path();
+    commit(p, "staged", "original");
+    commit(p, "unstaged", "original");
+    std::fs::write(p.join("staged"), "selected change").unwrap();
+    git(p, &["add", "staged"]);
+    // Also exercise partially staged files and untracked work.
+    std::fs::write(p.join("staged"), "later change").unwrap();
+    std::fs::write(p.join("unstaged"), "unrelated change").unwrap();
+    std::fs::write(p.join("untracked"), "keep").unwrap();
+    let mut child = Command::new("/usr/bin/script")
+        .args([
+            "-q",
+            "/dev/null",
+            env!("CARGO_BIN_EXE_sk"),
+            "create",
+            "feature",
+            "-m",
+            "selected",
+        ])
+        .current_dir(p)
+        .env("XDG_CONFIG_HOME", p.join(".git/config-home"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"n\n").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        !String::from_utf8_lossy(&output.stdout)
+            .contains("Stage unstaged and untracked changes?")
+    );
+    assert_eq!(git(p, &["show", "HEAD:staged"]), "selected change");
+    assert_eq!(git(p, &["show", "HEAD:unstaged"]), "original");
+    assert_eq!(
+        std::fs::read_to_string(p.join("staged")).unwrap(),
+        "later change"
+    );
+    assert_eq!(
+        std::fs::read_to_string(p.join("unstaged")).unwrap(),
+        "unrelated change"
+    );
+    assert_eq!(
+        std::fs::read_to_string(p.join("untracked")).unwrap(),
+        "keep"
+    );
+    assert!(git(p, &["diff", "--cached", "--name-only"]).is_empty());
+}

@@ -655,7 +655,11 @@ async fn create(repo: &Repository, args: &[String]) -> Result<()> {
         branch_name = format!("{original_name}-{suffix}");
         suffix += 1;
     }
-    if !all && std::io::stdin().is_terminal() {
+    let has_staged = !repo
+        .git(&["diff", "--cached", "--name-only"])
+        .await?
+        .is_empty();
+    if !all && !has_staged && std::io::stdin().is_terminal() {
         let dirty = repo.git(&["diff", "--name-only"]).await?;
         let untracked = repo
             .git(&["ls-files", "--others", "--exclude-standard"])
