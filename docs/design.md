@@ -307,3 +307,14 @@ preserved follow-up work. Up-to-date, remote updates, local replays, missing
 remote branches, and unpublished local work receive distinct messages.
 No Graphite-specific version numbers are invented. NO_COLOR, TERM=dumb,
 and redirected output disable color.
+
+## Merge progress
+
+Merge prints the selected method, target trunk, and PR list with cyan branch
+names and blue PR numbers. During the atomic GitHub request it reports
+submission, resuming an existing request, and each pending poll with elapsed
+time. Success is green and queued is yellow. A queued stack is explicitly
+not reported as merged. The API exposes whole-stack status, not individual
+PR completion or percentages, so no per-PR progress is invented. Output is
+plain when redirected or when NO_COLOR is set. All progress remains
+noninteractive and is tested against localhost mocks.

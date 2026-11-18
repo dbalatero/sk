@@ -137,7 +137,9 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let method = resolve_method(&client, options.method.as_deref()).await?;
-    println!("Merge method: {method}");
+    let color = submit_ui::color(std::io::stdout().is_terminal());
+    let paint = |text: &str, code| submit_ui::paint(text, code, color);
+    println!("Merge method: {}", paint(&method, "36"));
     println!(
         "{} into {}:",
         if options.dry_run {
@@ -145,10 +147,14 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
         } else {
             "Merging"
         },
-        stack.trunk
+        paint(&stack.trunk, "36")
     );
     for pull in &pulls {
-        println!("  #{} {}", pull.number, pull.head.name);
+        println!(
+            "  {} {}",
+            paint(&format!("#{}", pull.number), "94"),
+            paint(&pull.head.name, "36")
+        );
     }
     if options.dry_run {
         return Ok(());
@@ -158,9 +164,23 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
         execute(&client, target, Some(&method), Duration::from_secs(1), 60)
             .await?;
     match result.as_str() {
-        "merged" => println!("Merged. Run sk sync to refresh local branches."),
+        "merged" => println!(
+            "{}",
+            paint(
+                &format!(
+                    "Merged {} PRs into {}. Run sk sync to refresh local branches.",
+                    pulls.len(),
+                    stack.trunk,
+                ),
+                "32"
+            )
+        ),
         "enqueued" => println!(
-            "Added to the merge queue; not merged yet. Run sk sync later."
+            "{}",
+            paint(
+                "Added to the merge queue; not merged yet. Run sk sync later.",
+                "33",
+            )
         ),
         _ => unreachable!(),
     }
@@ -278,6 +298,37 @@ async fn execute(
     interval: Duration,
     max_polls: usize,
 ) -> Result<String> {
+    execute_with_progress(
+        client,
+        target,
+        method,
+        interval,
+        max_polls,
+        |message| {
+            println!(
+                "{}",
+                submit_ui::paint(
+                    message,
+                    "94",
+                    submit_ui::color(std::io::stdout().is_terminal())
+                )
+            );
+            let _ = std::io::stdout().flush();
+        },
+    )
+    .await
+}
+
+async fn execute_with_progress(
+    client: &GitHub,
+    target: &Pull,
+    method: Option<&str>,
+    interval: Duration,
+    max_polls: usize,
+    mut progress: impl FnMut(&str),
+) -> Result<String> {
+    let started = std::time::Instant::now();
+    progress("Submitting atomic stack merge to GitHub...");
     let path = format!("pulls/{}/merge-async", target.number);
     let mut body = json!({
         "sha": target.head.sha,
@@ -310,6 +361,9 @@ async fn execute(
         );
     }
     let mut result: MergeResult = serde_json::from_value(value)?;
+    if status == reqwest::StatusCode::CONFLICT {
+        progress("Resuming the existing merge request...");
+    }
     // A conflict response reports the existing request; poll, never resubmit.
     let mut uuid = result.details.uuid.clone();
     for attempt in 0..=max_polls {
@@ -329,6 +383,10 @@ async fn execute(
                 "merge is pending but no valid request ID was returned; check GitHub"
             );
         }
+        progress(&format!(
+            "Waiting for GitHub: pending ({}s elapsed, check {attempt}/{max_polls}).",
+            started.elapsed().as_secs(),
+        ));
         if attempt == max_polls {
             bail!(
                 "merge still pending (request {uuid}); check GitHub or rerun sk merge to resume polling"
@@ -421,6 +479,47 @@ mod tests {
             viewer_default_merge_method: None,
         };
         assert!(disabled.choose(None).is_err());
+    }
+
+    #[tokio::test]
+    async fn progress_reports_pending_until_atomic_merge_finishes() {
+        let (client, server) = server(vec![
+            (
+                "PUT /repos/o/r/pulls/7/merge-async ",
+                409,
+                json!({"status":"pending","details":{"uuid":"job-1"}}),
+            ),
+            (
+                "GET /repos/o/r/pulls/7/merge-async/job-1 ",
+                200,
+                json!({"status":"pending","details":{"uuid":"job-1"}}),
+            ),
+            (
+                "GET /repos/o/r/pulls/7/merge-async/job-1 ",
+                200,
+                json!({"status":"merged"}),
+            ),
+        ])
+        .await;
+        let target =
+            serde_json::from_value(pull(7, "a", "main", "abc")).unwrap();
+        let mut events = Vec::new();
+        let result = execute_with_progress(
+            &client,
+            &target,
+            Some("squash"),
+            Duration::ZERO,
+            3,
+            |message| events.push(message.to_owned()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, "merged");
+        assert!(events[0].contains("Submitting"));
+        assert!(events[1].contains("Resuming"));
+        assert!(events.iter().any(|line| line.contains("check 1/3")));
+        assert!(!events.iter().any(|line| line.contains("Merged")));
+        server.await.unwrap();
     }
 
     #[test]
