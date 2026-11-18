@@ -853,6 +853,48 @@ async fn sync_transform(
                 .await
                 .is_ok();
             if local_unchanged || remote_ahead {
+                // GitHub can rewrite a surviving PR onto the squashed trunk.
+                // Its old parent boundary no longer belongs to this history.
+                if repo
+                    .git(&[
+                        "merge-base",
+                        "--is-ancestor",
+                        &branch.base,
+                        fetched,
+                    ])
+                    .await
+                    .is_err()
+                {
+                    let parent = if let Some(parent) = result.branches.last() {
+                        match heads
+                            .get(&parent.name)
+                            .or(parent.fetched_oid.as_ref())
+                        {
+                            Some(oid) => oid.clone(),
+                            None => repo
+                                .git(&["rev-parse", &parent.name])
+                                .await?
+                                .trim()
+                                .to_owned(),
+                        }
+                    } else {
+                        let remote_trunk = format!(
+                            "refs/remotes/{}/{}",
+                            stack.remote, stack.trunk,
+                        );
+                        repo.git(&["rev-parse", "--verify", &remote_trunk])
+                            .await
+                            .or(repo.git(&["rev-parse", &stack.trunk]).await)?
+                            .trim()
+                            .to_owned()
+                    };
+                    branch.base = repo
+                        .git(&["merge-base", &parent, fetched])
+                        .await
+                        .context("Cannot identify remote branch boundary")?
+                        .trim()
+                        .to_owned();
+                }
                 heads.insert(branch.name.clone(), fetched.clone());
             } else if !local_ahead {
                 bail!("{} diverged; run sk restack", branch.name);
@@ -1559,6 +1601,105 @@ mod tests {
                 .is_empty()
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn sync_adopts_rebased_survivor_after_squash_merging_parent() {
+        let (_dir, repo) = fixture().await;
+        let root = repo.git(&["rev-parse", "main"]).await.unwrap();
+        repo.git(&["switch", "-c", "a"]).await.unwrap();
+        let a = add_commit(&repo, "a.txt", "A").await;
+        repo.git(&["switch", "-c", "b"]).await.unwrap();
+        let b = add_commit(&repo, "b.txt", "B").await;
+        repo.git(&["switch", "main"]).await.unwrap();
+        repo.git(&["merge", "--squash", "a"]).await.unwrap();
+        repo.git(&["commit", "-m", "Squashed parent"])
+            .await
+            .unwrap();
+        let trunk = repo
+            .git(&["rev-parse", "HEAD"])
+            .await
+            .unwrap()
+            .trim()
+            .to_owned();
+        repo.git(&["switch", "-c", "remote-survivor"])
+            .await
+            .unwrap();
+        repo.git(&["cherry-pick", &b]).await.unwrap();
+        let fetched = repo
+            .git(&["rev-parse", "HEAD"])
+            .await
+            .unwrap()
+            .trim()
+            .to_owned();
+        repo.git(&["switch", "main"]).await.unwrap();
+        repo.git(&["update-ref", "refs/remotes/origin/main", &trunk])
+            .await
+            .unwrap();
+        let stack = Stack {
+            id: "a".into(),
+            trunk: "main".into(),
+            remote: "origin".into(),
+            github_number: None,
+            branches: vec![
+                core::Branch {
+                    name: "a".into(),
+                    base: root.trim().into(),
+                    remote_oid: Some(a.clone()),
+                    fetched_oid: Some(a.clone()),
+                    pr: Some(PullRequest {
+                        number: 1,
+                        url: "url".into(),
+                        state: "MERGED".into(),
+                        draft: false,
+                        head_oid: a.clone(),
+                    }),
+                },
+                core::Branch {
+                    name: "b".into(),
+                    base: a.clone(),
+                    remote_oid: Some(b.clone()),
+                    fetched_oid: Some(fetched.clone()),
+                    pr: Some(PullRequest {
+                        number: 2,
+                        url: "url".into(),
+                        state: "OPEN".into(),
+                        draft: false,
+                        head_oid: fetched.clone(),
+                    }),
+                },
+            ],
+        };
+        let (proposed, mut heads, _) =
+            sync_transform(&repo, &stack).await.unwrap();
+        assert_eq!(proposed.branches.len(), 1);
+        assert_eq!(proposed.branches[0].base, trunk);
+        heads.insert("main".into(), trunk.clone());
+        let plan = core::plan_stack(&repo, &proposed, &heads).await.unwrap();
+        assert_eq!(plan["b"], fetched);
+        let original = State {
+            version: 1,
+            stacks: vec![stack],
+        };
+        let next = State {
+            version: 1,
+            stacks: vec![proposed],
+        };
+        repo.save(&original).await.unwrap();
+        core::apply_plan(&repo, &original, &next, &plan)
+            .await
+            .unwrap();
+        assert!(
+            repo.git(&["show-ref", "--verify", "refs/heads/a"])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            repo.git(&["rev-parse", "b"]).await.unwrap().trim(),
+            fetched
+        );
+        assert_eq!(repo.current().await.unwrap(), "main");
+        assert_eq!(repo.git(&["show", "b:b.txt"]).await.unwrap().trim(), "B");
     }
 
     #[tokio::test]

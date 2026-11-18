@@ -318,3 +318,15 @@ not reported as merged. The API exposes whole-stack status, not individual
 PR completion or percentages, so no per-PR progress is invented. Output is
 plain when redirected or when NO_COLOR is set. All progress remains
 noninteractive and is tested against localhost mocks.
+
+## Sync after GitHub rebases a surviving PR
+
+GitHub may rewrite an open descendant onto the new trunk after squash-merging
+its ancestors. When sync safely adopts that remote tip (local is unchanged
+since submission, or remote is ahead), it checks whether the recorded base
+belongs to the new history. If not, it derives a replacement boundary from
+the merge-base with the effective surviving parent, using the fetched trunk
+when merged ancestors were removed. This prevents replaying already-merged
+commits and producing false conflicts. Divergent local work still blocks
+sync; no forced overwrite is introduced. Cleanup and branch updates remain
+atomic per stack.

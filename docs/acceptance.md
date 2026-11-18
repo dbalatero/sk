@@ -232,3 +232,12 @@ instead of Create. Existing leased-push and remote-change guards still apply.
   no-op, updated, restacked, removed, and local-only branches are distinct.
 - Sync phase colors and results follow Graphite's palette, with plain output
   when redirected. Skipped stacks remain visible and produce a failure exit.
+
+## Squash-merge cleanup with a surviving remote PR
+
+- After a parent is squash-merged and GitHub rebases its child, sync removes
+  the merged parent and adopts the rewritten child with the new boundary.
+- The child retains its PR association and exact fetched tip; checkout is
+  preserved. Existing divergence checks continue to protect local work.
+- Verified in a disposable copy of vim-universal: nine merged branches were
+  removed, main updated, and PR #39 matched its remote tip without conflict.
