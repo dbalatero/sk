@@ -133,8 +133,8 @@ cannot implicitly include unexpected PRs. A standalone PR is supported only
 when it targets the configured trunk. Never automatically submit local work.
 
 Use PUT pulls/{number}/merge-async with the target SHA, merge_action=default,
-and bypass_rules=false. Optional method flags choose merge/squash/rebase;
-otherwise omit the method for GitHub's default. Poll the returned UUID using
+and bypass_rules=false. Send an allowed merge/squash/rebase method, using
+an explicit flag or the resolved GitHub preference. Poll the UUID using
 GET pulls/{number}/merge-async/{uuid}. Treat an existing pending request (409)
 as resumable, not permission to submit again. Distinguish merged, enqueued,
 failed, and pending. Polling is bounded; failed/unknown outcomes are errors.
@@ -286,3 +286,24 @@ this avoids relying on runner Git versions for git replay support.
 Jobs have a 30-minute timeout and superseded runs are cancelled. Actions
 are pinned to release commit SHAs, repository permissions are read-only,
 and checkout credentials are not persisted. The README badge shows main.
+
+## Allowed merge methods and sync feedback
+
+Merge reads GitHub's allowed methods and viewerDefaultMergeMethod via
+GraphQL, matching gh-stack's selection logic. Use the viewer's preference
+when allowed; otherwise choose the first enabled method in merge, squash,
+rebase order. Explicit disallowed flags fail before the merge request.
+Always send the selected method explicitly to merge-async; merge_action
+remains default so GitHub still routes through required queues. Dry-run
+performs the same validation and reports the method. Server failures no
+longer universally recommend sync: repository policy errors need a different
+fix, and syncing cannot enable a disabled merge method.
+
+Sync uses bright-blue fetching/checking/syncing headings and reports each
+trunk and branch after its atomic ref update succeeds. Green identifies
+successful branch outcomes, cyan identifies parents and PR numbers, red
+identifies deleted branches, and yellow highlights skipped stacks or
+preserved follow-up work. Up-to-date, remote updates, local replays, missing
+remote branches, and unpublished local work receive distinct messages.
+No Graphite-specific version numbers are invented. NO_COLOR, TERM=dumb,
+and redirected output disable color.

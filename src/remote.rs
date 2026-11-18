@@ -1,6 +1,7 @@
 //! Network operations, isolated to sync, submit, and merge.
 mod merge;
 mod submit_ui;
+mod sync_ui;
 
 use anyhow::{Context, Result, bail};
 use futures::{StreamExt, stream};
@@ -86,11 +87,19 @@ impl GitHub {
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+        self.request_url(
+            method,
+            &format!("{}/repos/{}/{}", self.base, self.repository, path),
+        )
+    }
+
+    fn request_url(
+        &self,
+        method: Method,
+        url: &str,
+    ) -> reqwest::RequestBuilder {
         self.client
-            .request(
-                method,
-                format!("{}/repos/{}/{}", self.base, self.repository, path),
-            )
+            .request(method, url)
             .bearer_auth(&self.token)
             .header("User-Agent", "sk/0.1")
             .header("Accept", "application/vnd.github+json")
@@ -946,6 +955,7 @@ async fn sync() -> Result<()> {
     for remote in &remotes {
         clients.insert(remote.clone(), api(&repo, remote).await?);
     }
+    sync_ui::phase("🌲 Fetching branches from remote...");
     let fetched = stream::iter(remotes.iter().map(|remote| {
         let repo = &repo;
         async move {
@@ -960,6 +970,7 @@ async fn sync() -> Result<()> {
     for result in fetched {
         result?;
     }
+    sync_ui::phase("🔎 Checking pull requests...");
     let refreshed =
         stream::iter(state.stacks.iter().enumerate().map(|(index, stack)| {
             let repo = &repo;
@@ -984,6 +995,7 @@ async fn sync() -> Result<()> {
     }
     // Cache remote observations even if a local stack cannot be rewritten.
     repo.save(&state).await?;
+    sync_ui::phase("🔄 Syncing and restacking branches...");
     let proposals = stream::iter(ready.into_iter().map(|index| {
         let stack = state.stacks[index].clone();
         let repo = &repo;
@@ -1012,12 +1024,36 @@ async fn sync() -> Result<()> {
             Ok((stack, heads, notes)) => {
                 let mut proposed = state.clone();
                 proposed.stacks[index] = stack;
+                let mut before = BTreeMap::new();
+                for name in std::iter::once(&state.stacks[index].trunk)
+                    .chain(state.stacks[index].branches.iter().map(|b| &b.name))
+                {
+                    before.insert(
+                        name.clone(),
+                        repo.git(&["rev-parse", &format!("refs/heads/{name}")])
+                            .await?
+                            .trim()
+                            .to_owned(),
+                    );
+                }
+                let color = submit_ui::color(std::io::stdout().is_terminal());
+                let lines = sync_ui::report(
+                    &state.stacks[index],
+                    &proposed.stacks[index],
+                    &before,
+                    &heads,
+                    color,
+                );
                 core::apply_plan(&repo, &state, &proposed, &heads).await?;
                 state = repo.load().await?;
-                for note in notes {
-                    println!("{note}");
+                for line in lines {
+                    println!("{line}");
                 }
-                println!("Synced {} locally", state.stacks[index].id);
+                for note in
+                    notes.into_iter().filter(|n| !n.starts_with("Pruned "))
+                {
+                    println!("{}", submit_ui::paint(&note, "33", color));
+                }
             }
             Err(error) => {
                 failures.push(format!("{}: {error:#}", state.stacks[index].id))
@@ -1029,7 +1065,14 @@ async fn sync() -> Result<()> {
     repo.save(&state).await?;
     if !failures.is_empty() {
         for failure in &failures {
-            eprintln!("Skipped {failure}");
+            eprintln!(
+                "{}",
+                submit_ui::paint(
+                    &format!("Skipped {failure}"),
+                    "33",
+                    submit_ui::color(std::io::stderr().is_terminal()),
+                )
+            );
         }
         bail!("{} stack(s) need attention", failures.len());
     }

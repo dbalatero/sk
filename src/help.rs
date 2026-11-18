@@ -102,7 +102,7 @@ pub fn requested(args: &[String]) -> Result<bool> {
                --squash           Squash each PR\n\
                --rebase           Rebase merge\n\
                --merge            Merge commits\n\
-             Without a method flag, GitHub chooses its default. Merge queues\n\
+             Defaults to your allowed GitHub merge preference. Merge queues\n\
              control their own method. No branch-protection bypass is used.",
         ),
         "sync" => (

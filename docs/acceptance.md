@@ -221,3 +221,14 @@ instead of Create. Existing leased-push and remote-change guards still apply.
 - Submit tests explicitly disable interactive preparation; only CLI dispatch
   detects the terminal. Mock API requests remain local to 127.0.0.1.
 - Regression verified by running the full suite under a pseudo-terminal.
+
+## Merge method policy and sync output
+
+- Squash-only repositories default to squash even when the viewer's stored
+  preference is merge; the actual merge request includes squash explicitly.
+- Allowed viewer defaults and explicit flags are respected. Disallowed
+  methods, absent allowed methods, or failed policy lookups prevent merging.
+- Sync reports per-branch outcomes and trunk status after successful apply;
+  no-op, updated, restacked, removed, and local-only branches are distinct.
+- Sync phase colors and results follow Graphite's palette, with plain output
+  when redirected. Skipped stacks remain visible and produce a failure exit.

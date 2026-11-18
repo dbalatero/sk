@@ -35,6 +35,79 @@ fn merge_end(current: usize, length: usize, options: &Options) -> usize {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MergeConfig {
+    merge_commit_allowed: bool,
+    squash_merge_allowed: bool,
+    rebase_merge_allowed: bool,
+    viewer_default_merge_method: Option<String>,
+}
+
+impl MergeConfig {
+    fn choose(&self, requested: Option<&str>) -> Result<String> {
+        let allowed: Vec<_> = [
+            ("merge", self.merge_commit_allowed),
+            ("squash", self.squash_merge_allowed),
+            ("rebase", self.rebase_merge_allowed),
+        ]
+        .into_iter()
+        .filter_map(|(name, enabled)| enabled.then_some(name))
+        .collect();
+        let first = allowed
+            .first()
+            .context("Repository has no enabled merge methods")?;
+        if let Some(requested) = requested {
+            if !allowed.contains(&requested) {
+                let flags = allowed
+                    .iter()
+                    .map(|method| format!("--{method}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!("Repository does not allow --{requested}; use {flags}");
+            }
+            return Ok(requested.into());
+        }
+        let preferred = self
+            .viewer_default_merge_method
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        Ok(if allowed.contains(&preferred.as_str()) {
+            preferred
+        } else {
+            (*first).into()
+        })
+    }
+}
+
+async fn resolve_method(
+    client: &GitHub,
+    requested: Option<&str>,
+) -> Result<String> {
+    let (owner, name) = client
+        .repository
+        .split_once('/')
+        .context("invalid GitHub repository")?;
+    let value = GitHub::response(client.request_url(
+        Method::POST, &format!("{}/graphql", client.base),
+    ).json(&json!({
+        "query": concat!(
+            "query($owner:String!,$name:String!){",
+            "repository(owner:$owner,name:$name){mergeCommitAllowed ",
+            "squashMergeAllowed rebaseMergeAllowed viewerDefaultMergeMethod}}",
+        ),
+        "variables": {"owner": owner, "name": name},
+    }))).await?.context("Repository merge settings unavailable")?;
+    if let Some(errors) = value.get("errors") {
+        bail!("Could not read repository merge settings: {errors}");
+    }
+    let config: MergeConfig =
+        serde_json::from_value(value["data"]["repository"].clone())
+            .context("Invalid repository merge settings response")?;
+    config.choose(requested)
+}
+
 pub(super) async fn run(args: &[String]) -> Result<()> {
     let options = options(args)?;
     let repo = Repository::discover().await?;
@@ -63,6 +136,8 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
         println!("No open PRs in the selected range. Run sk sync to refresh.");
         return Ok(());
     }
+    let method = resolve_method(&client, options.method.as_deref()).await?;
+    println!("Merge method: {method}");
     println!(
         "{} into {}:",
         if options.dry_run {
@@ -79,14 +154,9 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
         return Ok(());
     }
     let target = pulls.last().unwrap();
-    let result = execute(
-        &client,
-        target,
-        options.method.as_deref(),
-        Duration::from_secs(1),
-        60,
-    )
-    .await?;
+    let result =
+        execute(&client, target, Some(&method), Duration::from_secs(1), 60)
+            .await?;
     match result.as_str() {
         "merged" => println!("Merged. Run sk sync to refresh local branches."),
         "enqueued" => println!(
@@ -245,10 +315,7 @@ async fn execute(
     for attempt in 0..=max_polls {
         match result.status.as_str() {
             "merged" | "enqueued" => return Ok(result.status),
-            "failed" => bail!(
-                "merge failed: {}. Run sk sync before retrying",
-                result.details.message
-            ),
+            "failed" => bail!("merge failed: {}", result.details.message),
             "pending" => {}
             other => bail!("unknown merge status {other:?}; check GitHub"),
         }
@@ -279,6 +346,82 @@ async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn chooses_allowed_default_and_sends_it_to_merge_api() {
+        let (client, task) = server(vec![
+            (
+                "POST /graphql ",
+                200,
+                json!({"data": {"repository": {
+                    "mergeCommitAllowed": false, "squashMergeAllowed": true,
+                    "rebaseMergeAllowed": false,
+                    "viewerDefaultMergeMethod": "MERGE"
+                }}}),
+            ),
+            (
+                "PUT /repos/o/r/pulls/7/merge-async ",
+                200,
+                json!({"status": "merged"}),
+            ),
+        ])
+        .await;
+        let method = resolve_method(&client, None).await.unwrap();
+        assert_eq!(method, "squash");
+        let pr = serde_json::from_value(pull(7, "a", "main", "abc")).unwrap();
+        execute(&client, &pr, Some(&method), Duration::ZERO, 1)
+            .await
+            .unwrap();
+        let requests = task.await.unwrap();
+        let body: Value =
+            serde_json::from_str(requests[1].split("\r\n\r\n").nth(1).unwrap())
+                .unwrap();
+        assert_eq!(body["merge_method"], "squash");
+        assert_eq!(body["merge_action"], "default");
+    }
+
+    #[tokio::test]
+    async fn disallowed_method_and_graphql_errors_stop_before_merge() {
+        for response in [
+            json!({"data": {"repository": {
+                "mergeCommitAllowed": false, "squashMergeAllowed": true,
+                "rebaseMergeAllowed": false,
+                "viewerDefaultMergeMethod": "SQUASH"
+            }}}),
+            json!({"errors": [{"message": "Access denied"}]}),
+        ] {
+            let (client, task) =
+                server(vec![("POST /graphql ", 200, response)]).await;
+            assert!(resolve_method(&client, Some("merge")).await.is_err());
+            assert_eq!(task.await.unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn merge_method_respects_preference_and_explicit_flags() {
+        let config = MergeConfig {
+            merge_commit_allowed: true,
+            squash_merge_allowed: true,
+            rebase_merge_allowed: false,
+            viewer_default_merge_method: Some("SQUASH".into()),
+        };
+        assert_eq!(config.choose(None).unwrap(), "squash");
+        assert_eq!(config.choose(Some("merge")).unwrap(), "merge");
+        assert!(
+            config
+                .choose(Some("rebase"))
+                .unwrap_err()
+                .to_string()
+                .contains("--squash")
+        );
+        let disabled = MergeConfig {
+            merge_commit_allowed: false,
+            squash_merge_allowed: false,
+            rebase_merge_allowed: false,
+            viewer_default_merge_method: None,
+        };
+        assert!(disabled.choose(None).is_err());
+    }
 
     #[test]
     fn default_scope_excludes_current_and_flags_extend_it() {
