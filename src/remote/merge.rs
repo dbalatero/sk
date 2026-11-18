@@ -2,7 +2,6 @@ use super::*;
 
 #[derive(Default)]
 struct Options {
-    include_current: bool,
     stack: bool,
     dry_run: bool,
     method: Option<String>,
@@ -12,7 +11,7 @@ fn options(args: &[String]) -> Result<Options> {
     let mut options = Options::default();
     for arg in args {
         match arg.as_str() {
-            "--include-current" => options.include_current = true,
+            "--include-current" => {} // Kept for compatibility.
             "--stack" => options.stack = true,
             "--dry-run" => options.dry_run = true,
             "--squash" | "--rebase" | "--merge" => {
@@ -28,11 +27,7 @@ fn options(args: &[String]) -> Result<Options> {
 }
 
 fn merge_end(current: usize, length: usize, options: &Options) -> usize {
-    if options.stack {
-        length
-    } else {
-        current + usize::from(options.include_current)
-    }
+    if options.stack { length } else { current + 1 }
 }
 
 #[derive(Deserialize)]
@@ -126,10 +121,6 @@ pub(super) async fn run(args: &[String]) -> Result<()> {
         .position(|b| b.name == current)
         .unwrap();
     let end = merge_end(position, stack.branches.len(), &options);
-    if end == 0 {
-        println!("No branches below the current branch to merge.");
-        return Ok(());
-    }
     let client = api(&repo, &stack.remote).await?;
     let pulls = preflight(&repo, stack, end, &client).await?;
     if pulls.is_empty() {
@@ -523,9 +514,10 @@ mod tests {
     }
 
     #[test]
-    fn default_scope_excludes_current_and_flags_extend_it() {
-        assert_eq!(merge_end(2, 4, &Options::default()), 2);
-        assert_eq!(merge_end(0, 4, &Options::default()), 0);
+    fn default_scope_includes_current_and_stack_extends_it() {
+        assert_eq!(merge_end(2, 4, &Options::default()), 3);
+        assert_eq!(merge_end(0, 4, &Options::default()), 1);
+        assert_eq!(merge_end(0, 1, &Options::default()), 1);
         assert_eq!(
             merge_end(2, 4, &options(&["--include-current".into()]).unwrap()),
             3

@@ -192,9 +192,10 @@ clean checkout. Adding/removing lines is unsupported by sk's linear model.
 
 ## Merge
 
-`sk merge` merges open PRs below the current branch into trunk, excluding the
-current branch. Already merged PRs are skipped. `--include-current` includes
-the current branch; `--stack` selects the whole stack. Use `--dry-run` to
+`sk merge` merges the current PR and all open PRs below it into trunk.
+A single-PR stack merges that PR. Already merged PRs are skipped. `--stack`
+also includes descendants above the current branch. `--include-current`
+remains accepted for compatibility and is now redundant. Use `--dry-run` to
 fetch and preview the exact selection without submitting a merge request.
 
 Merge checks the repository's allowed methods and uses your last-used GitHub

@@ -121,10 +121,11 @@ https://graphite.com/docs/edit-branch-order.
 ## Merge
 
 Merge is an explicit addition to the network-command allowlist. Default scope
-is all branches strictly below current, excluding current. --include-current
-adds current; --stack includes descendants; --dry-run performs read-only API
+includes the current branch and all branches below it. --include-current
+is a compatibility no-op; --stack includes descendants. --dry-run performs
+read-only API
 validation and prints the selection. No browser or interactive confirmation
-is involved. A bottom branch with default scope exits without authentication.
+is involved. A bottom or single-PR branch merges its own PR by default.
 
 Fresh PR data determines eligibility. Skip already merged PRs; closed/draft
 or missing PRs block. Selected open heads must match local commits, and the

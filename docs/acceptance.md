@@ -129,7 +129,8 @@ instruction.
 
 ## Merge acceptance
 
-- M1: Default excludes current; include-current and stack broaden explicitly.
+- M1: Default includes current and ancestors, including a single-PR stack.
+  --stack adds descendants; --include-current remains a compatibility no-op.
 - M2: Fresh API state and local heads determine eligibility. Skip merged PRs;
   reject drafts, closed/missing PRs, changed heads, and unexpected ancestors.
 - M3: Pin the target SHA, use the async stack API, and never bypass rules.

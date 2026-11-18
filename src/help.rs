@@ -90,13 +90,13 @@ pub fn requested(args: &[String]) -> Result<bool> {
              Example: sk ss -dn",
         ),
         "merge" => (
-            "merge [--include-current | --stack] [--dry-run]",
-            "Merge open PRs below the current branch into trunk. The current\n\
-             branch is excluded by default. Already merged PRs are skipped.\n\
+            "merge [--stack] [--dry-run]",
+            "Merge open PRs through the current branch into trunk, including it.\n\
+             Already merged PRs are skipped.\n\
              Draft, closed, unpublished, or changed PRs block the operation.\n\
              Uses GitHub async stack merge and honors merge queues/rules.\n\
              Run sync afterward to refresh local state; no local refs change.",
-            "  --include-current  Also merge the current branch\n\
+            "  --include-current  Accepted for compatibility; already the default\n\
                --stack            Merge the entire stack\n\
                --dry-run          Fetch and preview without merging\n\
                --squash           Squash each PR\n\

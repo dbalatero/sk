@@ -30,7 +30,7 @@ async fn run() -> Result<()> {
                 "  split --by-commit [--each]\n",
                 "  top | bottom\n",
                 "  sync\n",
-                "  merge [--include-current | --stack] [--dry-run]\n",
+                "  merge [--stack] [--dry-run]\n",
                 "  aliases\n",
                 "  reorder [--stack]\n",
                 "  restack | continue | abort\n",
