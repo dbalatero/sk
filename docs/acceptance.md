@@ -242,3 +242,12 @@ instead of Create. Existing leased-push and remote-change guards still apply.
   preserved. Existing divergence checks continue to protect local work.
 - Verified in a disposable copy of vim-universal: nine merged branches were
   removed, main updated, and PR #39 matched its remote tip without conflict.
+
+## Publish PRs during submit
+
+- -p, --publish, and combined -np/-snp flags are accepted.
+- Publish skips the draft prompt, creates non-drafts, and overrides -d.
+- Existing drafts are marked ready via GraphQL and cached only on confirmed
+  success; reports say Ready for review without an unnecessary Git push.
+- No-publish submissions retain draft state. Already-ready PRs need no
+  readiness mutation; GraphQL errors and unconfirmed results fail.

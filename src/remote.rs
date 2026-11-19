@@ -173,6 +173,58 @@ impl GitHub {
         Ok(serde_json::from_value(value)?)
     }
 
+    async fn graphql(&self, query: &str, variables: Value) -> Result<Value> {
+        let value = Self::response(
+            self.request_url(Method::POST, &format!("{}/graphql", self.base))
+                .json(&json!({"query": query, "variables": variables})),
+        )
+        .await?
+        .context("GitHub GraphQL response unavailable")?;
+        if let Some(errors) = value.get("errors") {
+            bail!("GitHub GraphQL error: {errors}");
+        }
+        Ok(value)
+    }
+
+    async fn publish_pull(&self, number: u64) -> Result<bool> {
+        let (owner, name) = self
+            .repository
+            .split_once('/')
+            .context("invalid GitHub repository")?;
+        let value = self
+            .graphql(
+                concat!(
+                    "query($owner:String!,$name:String!,$number:Int!){",
+                    "repository(owner:$owner,name:$name){",
+                    "pullRequest(number:$number){id isDraft}}}",
+                ),
+                json!({"owner":owner,"name":name,"number":number}),
+            )
+            .await?;
+        let pull = &value["data"]["repository"]["pullRequest"];
+        if !pull["isDraft"]
+            .as_bool()
+            .context("Missing PR draft status")?
+        {
+            return Ok(false);
+        }
+        let id = pull["id"].as_str().context("Missing PR node ID")?;
+        let value = self
+            .graphql(
+                concat!(
+                    "mutation($id:ID!){markPullRequestReadyForReview(",
+                    "input:{pullRequestId:$id}){pullRequest{isDraft}}}",
+                ),
+                json!({"id":id}),
+            )
+            .await?;
+        if value["data"]["markPullRequestReadyForReview"]["pullRequest"]
+            ["isDraft"].as_bool() != Some(false) {
+            bail!("GitHub did not confirm PR #{number} is ready for review");
+        }
+        Ok(true)
+    }
+
     async fn update_base(
         &self,
         number: u64,
@@ -458,6 +510,7 @@ async fn api(repo: &Repository, remote: &str) -> Result<GitHub> {
 struct SubmitOptions {
     stack: bool,
     draft: bool,
+    publish: bool,
     no_edit: bool,
 }
 
@@ -468,12 +521,14 @@ fn submit_options(args: &[String]) -> Result<SubmitOptions> {
             "--stack" | "--stack=true" | "-s" => result.stack = true,
             "--no-stack" | "--stack=false" => result.stack = false,
             "--draft" => result.draft = true,
+            "--publish" => result.publish = true,
             "--no-edit" => result.no_edit = true,
             value if value.starts_with('-') && !value.starts_with("--") => {
                 for flag in value[1..].chars() {
                     match flag {
                         's' => result.stack = true,
                         'd' => result.draft = true,
+                        'p' => result.publish = true,
                         'n' => result.no_edit = true,
                         _ => bail!("unsupported submit flag: -{flag}"),
                     }
@@ -528,10 +583,19 @@ struct SubmitReport {
     created: bool,
     pushed: bool,
     parent_changed: bool,
+    published: bool,
 }
 
 impl SubmitReport {
     fn action(&self) -> &'static str {
+        if self.published {
+            return match (self.pushed, self.parent_changed) {
+                (true, true) => "Update code, new parent, ready for review",
+                (true, false) => "Update code, ready for review",
+                (false, true) => "New parent, ready for review",
+                (false, false) => "Ready for review",
+            };
+        }
         match (self.created, self.pushed, self.parent_changed) {
             (true, _, _) => "Create",
             (false, true, true) => "Update code, new parent",
@@ -743,12 +807,20 @@ async fn submit(
                 }
             }
         };
+        let published = if options.publish && pr.draft {
+            let changed = client.publish_pull(pr.number).await?;
+            pr.draft = false;
+            changed
+        } else {
+            false
+        };
         let report = SubmitReport {
             branch: branch.name.clone(),
             url: pr.url.clone(),
             created,
             pushed: changed.contains(&branch.name),
             parent_changed,
+            published,
         };
         pr.head_oid = snapshots[&branch.name].clone();
         state.stacks[index].branches[position].pr = Some(pr);
@@ -1156,6 +1228,65 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn publishing_checks_graphql_errors_and_confirmation() {
+        for response in [
+            json!({"errors":[{"message":"forbidden"}]}),
+            json!({"data":{"markPullRequestReadyForReview":{
+                "pullRequest":{"isDraft":true}
+            }}}),
+        ] {
+            let (base, server) = mock_sequence(vec![
+                (
+                    "POST /graphql ",
+                    200,
+                    json!({"data":{"repository":{
+                        "pullRequest":{"id":"PR_7","isDraft":true}
+                    }}}),
+                ),
+                ("POST /graphql ", 200, response),
+            ])
+            .await;
+            let api = GitHub::new(&base, "o/r", "test".into());
+            assert!(api.publish_pull(7).await.is_err());
+            server.await.unwrap();
+        }
+        let (base, server) = mock_sequence(vec![(
+            "POST /graphql ",
+            200,
+            json!({"data":{"repository":{
+                "pullRequest":{"id":"PR_7","isDraft":false}
+            }}}),
+        )])
+        .await;
+        assert!(
+            !GitHub::new(&base, "o/r", "test".into())
+                .publish_pull(7)
+                .await
+                .unwrap()
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn publish_flag_skips_draft_prompt_and_overrides_draft() {
+        let options = submit_options(&["-snpd".into()]).unwrap();
+        assert!(options.publish && options.stack && options.no_edit);
+        assert!(submit_options(&["--publish".into()]).unwrap().publish);
+        let dir = tempfile::tempdir().unwrap();
+        let (_, draft) = submit_ui::prepare(
+            dir.path(),
+            "branch",
+            "title",
+            "body",
+            &options,
+            true,
+        )
+        .await
+        .unwrap();
+        assert!(!draft);
+    }
+
     #[test]
     fn combined_submit_flags_and_remote_urls() {
         assert_eq!(
@@ -1163,7 +1294,8 @@ mod tests {
             SubmitOptions {
                 stack: true,
                 draft: true,
-                no_edit: true
+                no_edit: true,
+                publish: false,
             }
         );
         assert!(!submit_options(&[]).unwrap().stack);
@@ -1305,6 +1437,7 @@ mod tests {
             "No-op",
             "New parent",
             "Update code, new parent",
+            "Ready for review",
         ] {
             let (_dir, repo) = fixture().await;
             let bare = tempfile::tempdir().unwrap();
@@ -1350,6 +1483,7 @@ mod tests {
                     "main"
                 });
             pr["head"]["sha"] = json!(old);
+            pr["draft"] = json!(matches!(action, "Ready for review" | "No-op"));
             let mut replies = if action == "Create" {
                 vec![
                     ("GET /repos/o/r/pulls?", 200, json!([])),
@@ -1366,6 +1500,26 @@ mod tests {
                 replies.extend([
                     ("GET /repos/o/r/stacks?", 200, json!([])),
                     ("PATCH /repos/o/r/pulls/7 ", 200, pr.clone()),
+                ]);
+            }
+            if action == "Ready for review" {
+                replies.extend([
+                    (
+                        "POST /graphql ",
+                        200,
+                        json!({"data": {"repository": {
+                            "pullRequest": {"id": "PR_7", "isDraft": true}
+                        }}}),
+                    ),
+                    (
+                        "POST /graphql ",
+                        200,
+                        json!({"data": {
+                            "markPullRequestReadyForReview": {
+                                "pullRequest": {"isDraft": false}
+                            }
+                        }}),
+                    ),
                 ]);
             }
             let state = State {
@@ -1395,6 +1549,7 @@ mod tests {
                 &api,
                 SubmitOptions {
                     no_edit: true,
+                    publish: action == "Ready for review",
                     ..Default::default()
                 },
                 false,
@@ -1402,6 +1557,14 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(reports[0].action(), action);
+            assert_eq!(
+                repo.load().await.unwrap().stacks[0].branches[0]
+                    .pr
+                    .as_ref()
+                    .unwrap()
+                    .draft,
+                action == "No-op",
+            );
             assert_eq!(
                 reports[0].line(false),
                 format!(
@@ -1554,6 +1717,7 @@ mod tests {
         let options = || SubmitOptions {
             stack: whole_stack,
             draft: true,
+            publish: false,
             no_edit: true,
         };
         assert!(
@@ -1953,6 +2117,7 @@ mod tests {
             created: false,
             pushed: false,
             parent_changed: false,
+            published: false,
         };
         assert!(report.line(true).contains("\x1b[2mfeature\x1b[0m"));
         for action in 0..3 {

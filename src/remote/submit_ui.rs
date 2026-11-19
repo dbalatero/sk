@@ -64,7 +64,9 @@ pub(super) async fn prepare(
             }
         }
     }
-    let draft = if interactive && !options.draft {
+    let draft = if options.publish {
+        false
+    } else if interactive && !options.draft {
         choose(
             "Submit",
             ["Publish Pull Request", "Create Draft Pull Request"],

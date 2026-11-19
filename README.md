@@ -85,7 +85,10 @@ to restore the original stack.
 For each new PR, submit offers arrow-key choices to edit the body or use
 its default, then publish or create a draft. `-n` skips the body prompt and
 editor; `-d` skips the publish/draft choice and creates drafts. `-dn` skips
-both. Existing PR titles, bodies, and draft status stay unchanged.
+both. `-p` / `--publish` creates ready-for-review PRs and publishes existing
+drafts in the selected range, skipping the publish/draft prompt. It takes
+precedence over `-d`. Existing titles and bodies stay unchanged.
+Use `sk ss -np` to publish the whole stack without editing.
 
 When `.github/PULL_REQUEST_TEMPLATE.md` exists in the working tree, its
 contents are the default body; otherwise sk uses commit messages. Editing

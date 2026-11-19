@@ -24,7 +24,7 @@ async fn run() -> Result<()> {
                 "Usage: sk <command> [options]\n\n",
                 "Commands:\n",
                 "  create | c [name] [-m message] [-a]\n",
-                "  submit | s | ss [-dn] [--stack]\n",
+                "  submit | s | ss [-dnp] [--stack]\n",
                 "  modify | m [-a] [-c] [-m message] [-e]\n",
                 "  track [branch] [--parent parent]\n",
                 "  split --by-commit [--each]\n",

@@ -13,7 +13,7 @@ Only sync, submit, and merge perform Git network operations or API requests.
   creation; descendants keep their refs until explicit sk restack.
 - submit/s publish ancestors through the current branch; ss includes
   descendants (--stack). -d creates draft PRs; -n skips
-  editing. Existing PR metadata and draft state are preserved.
+  editing. Existing PR metadata is preserved; -p publishes existing drafts.
 - New PR titles use the first unique commit subject. Descriptions use its
   body followed by subsequent commit messages. Each editor file ends in .md:
   title on line 1, blank line 2, description thereafter. Use $EDITOR.
@@ -251,7 +251,8 @@ New PRs offer Use default description / Edit Body, followed by Publish Pull
 Request / Create Draft Pull Request. Arrow keys, j/k, or Tab change the
 choice; Enter accepts. Use default description is initially selected, and
 publishing is the initial submit choice. Existing PRs are not prompted
-and keep title, body, and draft state. Choices for the entire submission
+and keep title and body; draft state changes only with -p. Choices for the
+entire submission
 are gathered before pushing or mutating GitHub; Escape/Ctrl-C cancels.
 
 `-n` skips body editing, `-d` forces draft creation, and `-dn` skips both
@@ -331,3 +332,15 @@ when merged ancestors were removed. This prevents replaying already-merged
 commits and producing false conflicts. Divergent local work still blocks
 sync; no forced overwrite is introduced. Cleanup and branch updates remain
 atomic per stack.
+
+## Submit publish flag
+
+`submit -p` / `--publish` creates ready-for-review PRs and publishes existing
+drafts within the normal submit scope. `ss -np` publishes the entire stack
+without metadata editing. Publish overrides draft independent of flag order,
+as in Graphite, and skips the draft/publish prompt. Existing titles and
+bodies are untouched. Existing drafts use markPullRequestReadyForReview;
+GraphQL errors or missing confirmation fail without marking the local cache
+ready. Already-ready PRs are not mutated. Reports include Ready for review,
+combined with code/base updates when applicable. Without -p, draft status
+continues to be preserved.
