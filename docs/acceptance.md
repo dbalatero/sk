@@ -251,3 +251,14 @@ instead of Create. Existing leased-push and remote-change guards still apply.
   success; reports say Ready for review without an unnecessary Git push.
 - No-publish submissions retain draft state. Already-ready PRs need no
   readiness mutation; GraphQL errors and unconfirmed results fail.
+
+## Move branches
+
+- Move a suffix to trunk or another stack tip, replaying only unique commits.
+- --only reparents descendants and restacks both affected stacks.
+- --source preserves the original checkout; cached PR associations survive.
+- Parent moves are no-ops. Dirty work, cycles, siblings, unknown targets,
+  and affected branches in other worktrees are rejected before mutations.
+- Conflicts support continue and abort across both stacks, restoring all
+  original refs/state on abort, even after the first stack was rewritten.
+- Command help is offline. All move tests disable Git network protocols.

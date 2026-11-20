@@ -371,7 +371,7 @@ async fn switch(repo: &Repository, branch: &str) -> Result<()> {
     Ok(())
 }
 
-async fn pick(
+pub(crate) async fn pick(
     title: &str,
     choices: Vec<(String, String)>,
 ) -> Result<Option<String>> {

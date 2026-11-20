@@ -114,6 +114,18 @@ pub fn requested(args: &[String]) -> Result<bool> {
              Sync accesses GitHub but never pushes or changes remote PRs.",
             "",
         ),
+        "move" => (
+            "move [-o <branch>] [-s <branch>] [--only] [-a]",
+            "Move a branch and its descendants onto a new parent. Offline.\n\
+             Without --onto, choose a destination interactively.\n\
+             Destinations must be stack tips or known trunks; no siblings.\n\
+             Restacks affected branches and preserves the original checkout.\n\
+             Resolve conflicts with sk continue, or restore with sk abort.",
+            "  -o, --onto <branch>    Destination parent\n\
+               -s, --source <branch>  Branch to move (default: current)\n\
+               --only                 Move only this branch; reparent children\n\
+               -a, --all              Show destinations across all trunks",
+        ),
         "reorder" => (
             "reorder [--stack]",
             "Edit branch order from trunk through the current\n\

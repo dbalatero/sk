@@ -1,3 +1,4 @@
+mod move_branch;
 mod reorder;
 mod workflow;
 
@@ -188,6 +189,7 @@ pub async fn run(args: &[String]) -> Result<()> {
     let repo = Repository::discover().await?;
     let _lock = repo.lock()?;
     match args.first().map(String::as_str) {
+        Some("move") => move_branch::run(&repo, &args[1..]).await,
         Some("modify") => workflow::modify(&repo, &args[1..]).await,
         Some("track") => workflow::track(&repo, &args[1..]).await,
         Some("split") => workflow::split(&repo, &args[1..]).await,
@@ -329,6 +331,8 @@ struct Journal {
     new: BTreeMap<String, Option<String>>,
     kind: String,
     stack_index: usize,
+    #[serde(default)]
+    pending_stacks: Vec<usize>,
     next: usize,
     #[serde(default)]
     reconcile_steps: Vec<ReconcileStep>,
@@ -483,6 +487,7 @@ pub async fn apply_plan(
         new,
         kind: "transaction".into(),
         stack_index: 0,
+        pending_stacks: vec![],
         next: 0,
         reconcile_steps: vec![],
         reconcile_next: 0,
@@ -925,10 +930,26 @@ async fn begin_rebase(
     index: usize,
     reconcile_steps: Vec<ReconcileStep>,
 ) -> Result<()> {
+    begin_rebase_stacks(repo, original, proposed, vec![index], reconcile_steps)
+        .await
+}
+
+async fn begin_rebase_stacks(
+    repo: &Repository,
+    original: State,
+    proposed: State,
+    indices: Vec<usize>,
+    reconcile_steps: Vec<ReconcileStep>,
+) -> Result<()> {
     verify_snapshots(repo).await?;
-    foreign_worktrees(repo, &proposed.stacks[index]).await?;
+    for index in &indices {
+        foreign_worktrees(repo, &proposed.stacks[*index]).await?;
+    }
     let mut old = BTreeMap::new();
-    for b in &original.stacks[index].branches {
+    for b in indices
+        .iter()
+        .flat_map(|index| &proposed.stacks[*index].branches)
+    {
         old.insert(
             b.name.clone(),
             Some(repo.git(&["rev-parse", &b.name]).await?.trim().into()),
@@ -942,7 +963,8 @@ async fn begin_rebase(
         new: old.clone(),
         old,
         kind: "rebase".into(),
-        stack_index: index,
+        stack_index: indices[0],
+        pending_stacks: indices[1..].iter().rev().copied().collect(),
         next: 0,
         reconcile_steps,
         reconcile_next: 0,
@@ -988,7 +1010,16 @@ async fn advance(
         j.next += 1;
         save_journal(repo, &j).await?;
     }
-    while j.next < j.proposed.stacks[j.stack_index].branches.len() {
+    loop {
+        if j.next >= j.proposed.stacks[j.stack_index].branches.len() {
+            let Some(index) = j.pending_stacks.pop() else {
+                break;
+            };
+            j.stack_index = index;
+            j.next = 0;
+            save_journal(repo, &j).await?;
+            continue;
+        }
         let stack = &j.proposed.stacks[j.stack_index];
         let b = &stack.branches[j.next];
         let parent = if j.next == 0 {

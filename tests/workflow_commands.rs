@@ -549,3 +549,140 @@ fn restack_reports_progress_changes_and_noops() {
     assert!(text.contains("a does not need to be restacked on main."));
     assert_eq!(git(p, &["branch", "--show-current"]), "a");
 }
+
+#[tokio::test]
+async fn move_suffix_to_trunk_keeps_pr_metadata_and_checkout() {
+    let dir = fixture();
+    let p = dir.path();
+    success(p, &["create", "a"]);
+    let a = commit(p, "a", "A");
+    success(p, &["create", "b"]);
+    commit(p, "b", "B");
+    success(p, &["create", "c"]);
+    commit(p, "c", "C");
+    git(p, &["switch", "b"]);
+    let repo = Repository::at(p).await.unwrap();
+    let mut cached = repo.load().await.unwrap();
+    cached.stacks[0].branches[1].pr = Some(sk::core::PullRequest {
+        number: 42,
+        url: "https://github.com/o/r/pull/42".into(),
+        state: "OPEN".into(),
+        draft: true,
+        head_oid: git(p, &["rev-parse", "b"]),
+    });
+    repo.save(&cached).await.unwrap();
+    success(p, &["move", "--onto", "main"]);
+    assert_eq!(git(p, &["branch", "--show-current"]), "b");
+    assert_eq!(git(p, &["rev-parse", "a"]), a);
+    assert_eq!(git(p, &["log", "--format=%s", "main..b"]), "B");
+    assert_eq!(git(p, &["log", "--format=%s", "b..c"]), "C");
+    let s = state(p).await;
+    assert_eq!(s.stacks.len(), 2);
+    assert_eq!(s.stacks[1].branches[0].name, "b");
+    assert_eq!(s.stacks[1].branches[1].name, "c");
+    assert_eq!(s.stacks[1].branches[0].pr.as_ref().unwrap().number, 42);
+    assert!(s.stacks[1].branches[0].pr.as_ref().unwrap().draft);
+}
+
+#[tokio::test]
+async fn move_only_between_stacks_restacks_both_and_preserves_checkout() {
+    let dir = fixture();
+    let p = dir.path();
+    success(p, &["create", "a"]);
+    commit(p, "a", "A");
+    success(p, &["create", "b"]);
+    commit(p, "b", "B");
+    success(p, &["create", "c"]);
+    commit(p, "c", "C");
+    git(p, &["switch", "main"]);
+    success(p, &["create", "x"]);
+    commit(p, "x", "X");
+    success(p, &["move", "-s", "b", "-o", "x", "--only"]);
+    assert_eq!(git(p, &["branch", "--show-current"]), "x");
+    assert_eq!(git(p, &["log", "--format=%s", "a..c"]), "C");
+    assert_eq!(git(p, &["log", "--format=%s", "x..b"]), "B");
+    let s = state(p).await;
+    assert_eq!(s.stacks[0].branches[1].name, "c");
+    assert_eq!(s.stacks[1].branches[1].name, "b");
+}
+
+#[tokio::test]
+async fn move_conflicts_restore_both_stacks_or_continue() {
+    for abort in [false, true] {
+        let dir = fixture();
+        let p = dir.path();
+        commit(p, "shared", "root");
+        success(p, &["create", "a"]);
+        commit(p, "a", "A");
+        success(p, &["create", "b"]);
+        commit(p, "shared", "B");
+        success(p, &["create", "c"]);
+        commit(p, "c", "C");
+        git(p, &["switch", "main"]);
+        success(p, &["create", "x"]);
+        commit(p, "shared", "X");
+        let refs = git(p, &["show-ref", "--heads"]);
+        let before = serde_json::to_value(state(p).await).unwrap();
+        let output = sk(p, &["move", "-s", "b", "-o", "x", "--only"]);
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("sk continue")
+        );
+        if abort {
+            success(p, &["abort"]);
+            assert_eq!(git(p, &["show-ref", "--heads"]), refs);
+            assert_eq!(serde_json::to_value(state(p).await).unwrap(), before);
+        } else {
+            std::fs::write(p.join("shared"), "resolved").unwrap();
+            git(p, &["add", "shared"]);
+            success(p, &["continue"]);
+            assert_eq!(git(p, &["show", "b:shared"]), "resolved");
+            assert_eq!(git(p, &["log", "--format=%s", "a..c"]), "C");
+            assert_eq!(state(p).await.stacks[1].branches[1].name, "b");
+        }
+        assert_eq!(git(p, &["branch", "--show-current"]), "x");
+    }
+}
+
+#[test]
+fn move_rejects_cycles_siblings_unknown_destinations_and_dirty_work() {
+    let dir = fixture();
+    let p = dir.path();
+    for name in ["a", "b", "c"] {
+        success(p, &["create", name]);
+        commit(p, name, name);
+    }
+    let before = git(p, &["show-ref", "--heads"]);
+    for args in [
+        vec!["move", "-s", "a", "-o", "c"],
+        vec!["move", "-o", "a"],
+        vec!["move", "-o", "unknown"],
+    ] {
+        assert!(!sk(p, &args).status.success());
+        assert_eq!(git(p, &["show-ref", "--heads"]), before);
+    }
+    success(p, &["move", "-o", "b"]);
+    assert_eq!(git(p, &["show-ref", "--heads"]), before);
+    std::fs::write(p.join("dirty"), "keep").unwrap();
+    assert!(!sk(p, &["move", "-o", "main"]).status.success());
+    assert_eq!(git(p, &["show-ref", "--heads"]), before);
+}
+
+#[test]
+fn move_only_within_stack_and_foreign_worktree_guard() {
+    let dir = fixture();
+    let p = dir.path();
+    for name in ["a", "b", "c"] {
+        success(p, &["create", name]);
+        commit(p, name, name);
+    }
+    success(p, &["move", "-s", "b", "-o", "c", "--only"]);
+    assert_eq!(git(p, &["log", "--format=%s", "a..c"]), "c");
+    assert_eq!(git(p, &["log", "--format=%s", "c..b"]), "b");
+    let other = tempfile::tempdir().unwrap();
+    git(p, &["worktree", "add", other.path().to_str().unwrap(), "b"]);
+    let before = git(p, &["show-ref", "--heads"]);
+    let out = sk(p, &["move", "-s", "b", "-o", "main"]);
+    assert!(!out.status.success());
+    assert_eq!(git(p, &["show-ref", "--heads"]), before);
+}

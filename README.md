@@ -304,3 +304,22 @@ date, synced from remote, restacked, deleted, or local work retained.
 Green marks successful branch results, cyan marks parents and PR numbers,
 and red marks deleted branches. Colors respect NO_COLOR and redirected
 output. Branch success messages appear only after local updates succeed.
+
+## Move branches
+
+```sh
+sk move                    # choose a new parent interactively
+sk move --onto main        # detach this branch and descendants into a stack
+sk move -o other-stack-tip  # move onto another stack
+sk move -s feature -o main --only  # move feature, leave descendants behind
+```
+
+Moves automatically restack affected branches, preserve PR associations,
+and restore your original checkout. `--only` reparents the source branch's
+children onto its old parent. Destinations must be tracked stack tips or
+known trunks; sibling branches within a stack remain unsupported.
+Use `-a` to show destinations across all trunks in the picker.
+
+Move requires a clean checkout and stays offline. Conflicts support
+`sk continue` and `sk abort`; abort restores both stacks. Run `sk submit`
+(or `sk ss` for descendants) afterward to update GitHub PR bases/grouping.

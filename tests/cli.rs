@@ -52,6 +52,7 @@ fn every_command_and_alias_has_offline_help() {
         "restack",
         "rs",
         "reorder",
+        "move",
         "continue",
         "abort",
         "log",

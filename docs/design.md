@@ -344,3 +344,23 @@ GraphQL errors or missing confirmation fail without marking the local cache
 ready. Already-ready PRs are not mutated. Reports include Ready for review,
 combined with code/base updates when applicable. Without -p, draft status
 continues to be preserved.
+
+## Move
+
+`move --onto/-o` moves the current branch and descendants, or `--source/-s`
+selects another tracked source. `--only` moves just the source and reparents
+its children to its old parent. An omitted destination opens the existing
+fuzzy selector; candidates are valid moves on the same trunk, with --all/-a
+showing all configured trunks. A parent destination is a no-op. Self moves,
+cycles, unknown targets, sibling-producing moves, and different remotes are
+rejected. Moving onto a known trunk creates a separate linear stack.
+
+Both source and destination are planned before atomic ref changes. Names,
+PR caches, and original checkout survive. Local stack grouping IDs are reset
+for affected stacks; submit rediscovers published grouping. There is no
+network activity. Dirty work and branches in other worktrees block.
+
+Conflict recovery journals the union of affected branch refs and a sequence
+of affected stacks. Continue advances through that sequence; abort restores
+all refs, metadata, and checkout. The optional pending_stacks journal field
+is backward-compatible with existing single-stack journals.

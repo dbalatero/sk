@@ -32,6 +32,7 @@ async fn run() -> Result<()> {
                 "  sync\n",
                 "  merge [--stack] [--dry-run]\n",
                 "  aliases\n",
+                "  move [-o branch] [-s branch] [--only]\n",
                 "  reorder [--stack]\n",
                 "  restack | continue | abort\n",
                 "  log short | ls\n",
@@ -49,8 +50,8 @@ async fn run() -> Result<()> {
             Ok(())
         }
         Some(
-            "create" | "modify" | "track" | "split" | "reorder" | "restack"
-            | "continue" | "abort",
+            "create" | "modify" | "move" | "track" | "split" | "reorder"
+            | "restack" | "continue" | "abort",
         ) => sk::core::run(&args).await,
         Some("sync" | "submit" | "ss" | "merge") => {
             sk::remote::run(&args).await
