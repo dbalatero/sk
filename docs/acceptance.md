@@ -262,3 +262,16 @@ instead of Create. Existing leased-push and remote-change guards still apply.
 - Conflicts support continue and abort across both stacks, restoring all
   original refs/state on abort, even after the first stack was rewritten.
 - Command help is offline. All move tests disable Git network protocols.
+
+## Delete
+
+- Deleting a tip checks out its parent and removes its ref and tracking.
+  Deleting the final branch checks out the configured trunk and removes
+  the empty stack record.
+- Noninteractive deletion requires `--force`. Dirty work, trunk, branches
+  with descendants, and parent branches in another worktree are rejected.
+- A live PR is detected without a cached PR association. GitHub must
+  confirm closure before any local deletion; rejection or an unconfirmed
+  response preserves branch refs, checkout, and metadata.
+- Tests use temporary local repositories and mock GitHub HTTP responses;
+  no real PRs are closed. Command help remains offline.

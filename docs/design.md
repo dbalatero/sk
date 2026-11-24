@@ -2,7 +2,8 @@
 
 sk is an async Rust, local-first CLI for linear stacked branches. sk owns
 local state and recovery. GitHub's public REST APIs own published PR stacks.
-Only sync, submit, and merge perform Git network operations or API requests.
+Only sync, submit, merge, and delete perform Git network operations or API
+requests.
 
 ## Commands
 
@@ -364,3 +365,24 @@ Conflict recovery journals the union of affected branch refs and a sequence
 of affected stacks. Continue advances through that sequence; abort restores
 all refs, metadata, and checkout. The optional pending_stacks journal field
 is backward-compatible with existing single-stack journals.
+
+## Delete
+
+`delete [-f|--force]` deletes the current tracked stack tip, after explicit
+confirmation that its commits will be discarded from the stack. It checks
+out the immediate parent, using the stack's configured trunk when empty,
+and removes empty stack metadata. Trunk, branches with descendants, dirty
+checkouts, and affected branches in other worktrees are protected.
+
+Delete is an approved exception to the offline-command rule. With a
+configured remote, it looks up the live open PR by head branch, including
+PRs not present in the local cache. An open PR is closed and GitHub must
+confirm closure before the local transaction starts. Lookup/auth/closure
+failures retain the local branch. A missing remote with cached submission
+information blocks deletion; a purely local stack needs no GitHub access.
+The remote Git branch is retained. Force skips confirmation, not checks.
+
+Local deletion uses the existing ref/state journal with an explicit parent
+checkout target, including its expected OID for recovery. Old journals
+remain readable. A later local failure cannot undo a confirmed PR closure;
+the error explains this, and local recovery uses continue/abort as usual.

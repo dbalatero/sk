@@ -31,6 +31,7 @@ async fn run() -> Result<()> {
                 "  top | bottom\n",
                 "  sync\n",
                 "  merge [--stack] [--dry-run]\n",
+                "  delete [-f]\n",
                 "  aliases\n",
                 "  move [-o branch] [-s branch] [--only]\n",
                 "  reorder [--stack]\n",
@@ -40,7 +41,7 @@ async fn run() -> Result<()> {
                 "  up [n] | down [n]\n",
                 "  pr [branch]\n\n",
                 "Use sk <command> --help for command options.\n",
-                "Only sync, submit, and merge access GitHub."
+                "Only sync, submit, merge, and delete access GitHub."
             ));
             Ok(())
         }
@@ -53,7 +54,7 @@ async fn run() -> Result<()> {
             "create" | "modify" | "move" | "track" | "split" | "reorder"
             | "restack" | "continue" | "abort",
         ) => sk::core::run(&args).await,
-        Some("sync" | "submit" | "ss" | "merge") => {
+        Some("sync" | "submit" | "ss" | "merge" | "delete") => {
             sk::remote::run(&args).await
         }
         Some(

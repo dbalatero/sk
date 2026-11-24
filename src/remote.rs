@@ -1,4 +1,5 @@
-//! Network operations, isolated to sync, submit, and merge.
+//! Network operations, isolated to sync, submit, merge, and delete.
+mod delete;
 mod merge;
 mod submit_ui;
 mod sync_ui;
@@ -541,6 +542,9 @@ fn submit_options(args: &[String]) -> Result<SubmitOptions> {
 }
 
 pub async fn run(args: &[String]) -> Result<()> {
+    if args.first().is_some_and(|arg| arg == "delete") {
+        return delete::run(&args[1..]).await;
+    }
     let command = args.first().context("missing remote command")?;
     match command.as_str() {
         "merge" => merge::run(&args[1..]).await,
@@ -1948,7 +1952,7 @@ mod tests {
         repo.clean().await.unwrap();
     }
 
-    async fn mock_sequence(
+    pub(super) async fn mock_sequence(
         sequence: Vec<(&'static str, u16, Value)>,
     ) -> (String, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

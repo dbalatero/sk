@@ -53,6 +53,7 @@ fn every_command_and_alias_has_offline_help() {
         "rs",
         "reorder",
         "move",
+        "delete",
         "continue",
         "abort",
         "log",

@@ -327,6 +327,8 @@ struct Journal {
     proposed: State,
     original_branch: String,
     checkout_oid: String,
+    #[serde(default)]
+    checkout_target: Option<(String, String)>,
     old: BTreeMap<String, Option<String>>,
     new: BTreeMap<String, Option<String>>,
     kind: String,
@@ -400,8 +402,28 @@ pub async fn apply_plan(
     proposed: &State,
     heads: &BTreeMap<String, String>,
 ) -> Result<()> {
+    apply_plan_with_checkout(repo, original, proposed, heads, None).await
+}
+
+pub(crate) async fn apply_plan_with_checkout(
+    repo: &Repository,
+    original: &State,
+    proposed: &State,
+    heads: &BTreeMap<String, String>,
+    target: Option<&str>,
+) -> Result<()> {
     repo.clean().await?;
     repo.ensure_idle().await?;
+    let checkout_target = match target {
+        Some(name) => Some((
+            name.to_owned(),
+            repo.git(&["rev-parse", &format!("refs/heads/{name}")])
+                .await?
+                .trim()
+                .to_owned(),
+        )),
+        None => None,
+    };
     let mut old = BTreeMap::new();
     let mut new = BTreeMap::new();
     for (name, oid) in heads {
@@ -482,6 +504,7 @@ pub async fn apply_plan(
         original: original.clone(),
         proposed: state,
         original_branch,
+        checkout_target,
         checkout_oid: repo.git(&["rev-parse", "HEAD"]).await?.trim().into(),
         old,
         new,
@@ -507,7 +530,17 @@ async fn finish(repo: &Repository, j: &Journal) -> Result<()> {
             bail!("{name} changed outside the recorded operation");
         }
     }
-    let target = if j.new.get(&j.original_branch) == Some(&None) {
+    let target = if let Some((name, oid)) = &j.checkout_target {
+        if repo
+            .git(&["rev-parse", &format!("refs/heads/{name}")])
+            .await?
+            .trim()
+            != oid
+        {
+            bail!("Checkout target changed outside the recorded operation");
+        }
+        name.clone()
+    } else if j.new.get(&j.original_branch) == Some(&None) {
         j.proposed
             .stacks
             .iter()
@@ -904,7 +937,7 @@ async fn restack(repo: &Repository) -> Result<()> {
         }
     }
 }
-async fn verify_snapshots(repo: &Repository) -> Result<()> {
+pub(crate) async fn verify_snapshots(repo: &Repository) -> Result<()> {
     let snapshots = repo
         .snapshots
         .lock()
@@ -959,6 +992,7 @@ async fn begin_rebase_stacks(
         original,
         proposed,
         original_branch: repo.current().await?,
+        checkout_target: None,
         checkout_oid: repo.git(&["rev-parse", "HEAD"]).await?.trim().into(),
         new: old.clone(),
         old,
@@ -1247,6 +1281,9 @@ pub async fn snapshot_state(repo: &Repository, state: &State) -> Result<()> {
 async fn verify_checkout(repo: &Repository, j: &Journal) -> Result<()> {
     let current = repo.current().await?;
     let mut checkouts = vec![j.original_branch.clone()];
+    if let Some((name, _)) = &j.checkout_target {
+        checkouts.push(name.clone());
+    }
     if j.kind == "rebase" {
         for index in [j.reconcile_next, j.reconcile_next.saturating_sub(1)] {
             if let Some(step) = j.reconcile_steps.get(index) {
@@ -1282,6 +1319,9 @@ async fn verify_checkout(repo: &Repository, j: &Journal) -> Result<()> {
     }
     let tree = repo.git(&["write-tree"]).await?.trim().to_string();
     let mut allowed = vec![j.checkout_oid.clone()];
+    if let Some((_, oid)) = &j.checkout_target {
+        allowed.push(oid.clone());
+    }
     allowed.extend(
         j.old
             .values()

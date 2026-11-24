@@ -114,6 +114,15 @@ pub fn requested(args: &[String]) -> Result<bool> {
              Sync accesses GitHub but never pushes or changes remote PRs.",
             "",
         ),
+        "delete" => (
+            "delete [-f]",
+            "Delete the current stack tip and check out its parent.\n\
+             Requires a clean checkout. Confirms before discarding commits.\n\
+             With a GitHub remote, checks for an open PR and closes it first.\n\
+             Lookup/closure failures preserve the local branch.\n\
+             The remote Git branch is retained. Trunks/descendants are protected.",
+            "  -f, --force  Skip confirmation (still checks and closes any PR)",
+        ),
         "move" => (
             "move [-o <branch>] [-s <branch>] [--only] [-a]",
             "Move a branch and its descendants onto a new parent. Offline.\n\

@@ -77,7 +77,7 @@ sk up
 sk pr
 ```
 
-Only `sync`, `submit`, and `merge` perform Git/API network operations.
+Only `sync`, `submit`, `merge`, and `delete` perform Git/API network operations.
 Local commands use cached PR information. `sync` and `restack` require a clean checkout.
 Use `sk continue` after resolving and staging rebase conflicts, or `sk abort`
 to restore the original stack.
@@ -323,3 +323,21 @@ Use `-a` to show destinations across all trunks in the picker.
 Move requires a clean checkout and stays offline. Conflicts support
 `sk continue` and `sk abort`; abort restores both stacks. Run `sk submit`
 (or `sk ss` for descendants) afterward to update GitHub PR bases/grouping.
+
+## Delete the top branch
+
+```sh
+sk delete       # confirm, then delete the current stack tip
+sk delete -f    # skip confirmation
+```
+
+Delete checks GitHub for an open PR, even if it is not cached locally. If
+one exists, it closes the PR before deleting the local branch. Otherwise,
+it deletes only the local branch. It checks out the parent (or trunk for
+the last branch) and removes the branch from stack tracking. The remote
+Git branch is kept.
+
+A clean checkout is required. Trunk and branches with descendants cannot
+be deleted. A failed PR lookup or closure stops local deletion. `--force`
+skips confirmation only; it does not bypass these checks. Without a
+configured remote or cached submission, deletion works locally.

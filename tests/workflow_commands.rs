@@ -686,3 +686,64 @@ fn move_only_within_stack_and_foreign_worktree_guard() {
     assert!(!out.status.success());
     assert_eq!(git(p, &["show-ref", "--heads"]), before);
 }
+
+#[tokio::test]
+async fn delete_tip_checks_out_parent_and_removes_tracking() {
+    let dir = fixture();
+    let p = dir.path();
+    for name in ["a", "b", "c"] {
+        success(p, &["create", name]);
+        commit(p, name, name);
+    }
+    let b = git(p, &["rev-parse", "b"]);
+    success(p, &["delete", "--force"]);
+    assert_eq!(git(p, &["branch", "--show-current"]), "b");
+    assert_eq!(git(p, &["rev-parse", "b"]), b);
+    assert_eq!(state(p).await.stacks[0].branches.len(), 2);
+    assert!(!p.join("c").exists());
+    assert!(!sk(p, &["checkout", "c"]).status.success());
+    success(p, &["delete", "-f"]);
+    success(p, &["delete", "-f"]);
+    assert_eq!(git(p, &["branch", "--show-current"]), "main");
+    assert!(state(p).await.stacks.is_empty());
+}
+
+#[test]
+fn delete_requires_confirmation_and_rejects_dirty_non_tip_or_trunk() {
+    let dir = fixture();
+    let p = dir.path();
+    assert!(!sk(p, &["delete", "-f"]).status.success());
+    success(p, &["create", "a"]);
+    commit(p, "a", "A");
+    success(p, &["create", "b"]);
+    commit(p, "b", "B");
+    let refs = git(p, &["show-ref", "--heads"]);
+    assert!(!sk(p, &["delete"]).status.success());
+    std::fs::write(p.join("work"), "keep").unwrap();
+    assert!(!sk(p, &["delete", "-f"]).status.success());
+    std::fs::remove_file(p.join("work")).unwrap();
+    git(p, &["switch", "a"]);
+    assert!(!sk(p, &["delete", "-f"]).status.success());
+    assert_eq!(git(p, &["show-ref", "--heads"]), refs);
+}
+
+#[tokio::test]
+async fn delete_last_branch_uses_custom_trunk_and_guards_other_worktrees() {
+    let dir = fixture();
+    let p = dir.path();
+    git(p, &["branch", "-m", "develop"]);
+    git(p, &["config", "sk.trunk", "develop"]);
+    success(p, &["create", "a"]);
+    commit(p, "a", "A");
+    let other = tempfile::tempdir().unwrap();
+    git(
+        p,
+        &["worktree", "add", other.path().to_str().unwrap(), "develop"],
+    );
+    assert!(!sk(p, &["delete", "-f"]).status.success());
+    assert_eq!(git(p, &["branch", "--show-current"]), "a");
+    git(p, &["worktree", "remove", other.path().to_str().unwrap()]);
+    success(p, &["delete", "-f"]);
+    assert_eq!(git(p, &["branch", "--show-current"]), "develop");
+    assert!(state(p).await.stacks.is_empty());
+}
