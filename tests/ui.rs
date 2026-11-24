@@ -1,16 +1,6 @@
 use sk::ui;
 
 #[test]
-fn fuzzy_matches_noncontiguous_case_insensitive_characters() {
-    assert!(ui::fuzzy_score("fat", "Feat-auth").is_some());
-    assert!(ui::fuzzy_score("xyz", "feat-auth").is_none());
-    assert!(
-        ui::fuzzy_score("auth", "auth").unwrap()
-            < ui::fuzzy_score("auth", "a-long-u-long-t-long-h").unwrap()
-    );
-}
-
-#[test]
 fn pr_identity_matches_subpages_but_not_other_numbers_or_hosts() {
     let base = "https://github.com/owner/repo/pull/12";
     assert!(ui::same_pr(base, &format!("{base}/files#diff-abc")));

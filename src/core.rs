@@ -838,24 +838,21 @@ async fn restack(repo: &Repository) -> Result<()> {
             let local =
                 repo.git(&["rev-parse", &b.name]).await?.trim().to_string();
             if Some(remote) != b.remote_oid.as_ref() && local != *remote {
-                use std::io::{IsTerminal, Write};
-                if !std::io::stdin().is_terminal() {
-                    bail!(
-                        "Divergence on {}; run restack interactively",
-                        b.name
-                    );
-                }
-                eprint!(
-                    "{} diverged: [l]ocal, [r]emote, [p]lay local changes \
-                     onto remote, [c]ancel: ",
-                    b.name
-                );
-                std::io::stderr().flush()?;
-                let mut reply = String::new();
-                std::io::stdin().read_line(&mut reply)?;
-                match reply.trim() {
-                    "l" => (),
-                    "r" => {
+                let choices = [
+                    ("cancel", "Cancel"),
+                    ("local", "Keep local branch"),
+                    ("remote", "Use remote branch"),
+                    ("replay", "Replay local changes onto remote"),
+                ]
+                .into_iter()
+                .map(|(key, label)| (key.into(), label.into()))
+                .collect();
+                let decision =
+                    crate::ui::pick(&format!("{} diverged", b.name), choices)
+                        .await?;
+                match decision.as_deref() {
+                    Some("local") => (),
+                    Some("remote") => {
                         heads.insert(b.name.clone(), remote.clone());
                         reconcile_steps.push(ReconcileStep {
                             name: b.name.clone(),
@@ -864,7 +861,7 @@ async fn restack(repo: &Repository) -> Result<()> {
                             head: remote.clone(),
                         });
                     }
-                    "p" => {
+                    Some("replay") => {
                         match plan_reconciliation(repo, b).await {
                             Ok(head) => {
                                 heads.insert(b.name.clone(), head);

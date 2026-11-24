@@ -1,23 +1,5 @@
 //! Offline terminal navigation, stack rendering, and browser integration.
 
-/// Lower scores prefer earlier and more tightly packed matches.
-pub fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
-    let query = query.to_lowercase();
-    let candidate = candidate.to_lowercase();
-    let mut positions = candidate.chars().enumerate();
-    let mut score = 0;
-    let mut previous = None;
-    for wanted in query.chars() {
-        let (index, _) = positions.find(|(_, ch)| *ch == wanted)?;
-        score += match previous {
-            Some(last) => index - last - 1,
-            None => index,
-        };
-        previous = Some(index);
-    }
-    Some(score)
-}
-
 fn pr_identity(url: &str) -> Option<(String, String, String, u64)> {
     let remainder = url.strip_prefix("https://")?;
     let mut pieces = remainder.split('/');
@@ -83,14 +65,26 @@ pub fn render_stacks(
     current: &str,
     color: bool,
 ) -> String {
+    let rows = stack_rows(stacks, current, color);
+    if rows.is_empty() {
+        return "No tracked stacks. Start one with sk create.\n".into();
+    }
+    rows.into_iter().map(|(_, label)| label + "\n").collect()
+}
+
+fn stack_rows(
+    stacks: &[ViewStack],
+    current: &str,
+    color: bool,
+) -> Vec<(String, String)> {
     let mut trunks: Vec<_> = stacks.iter().map(|s| &s.trunk).collect();
     trunks.sort();
     trunks.dedup();
     let multiple_trunks = trunks.len() > 1;
-    let mut output = String::new();
+    let mut rows = Vec::new();
     for trunk in trunks {
-        if !output.is_empty() {
-            output.push('\n');
+        if !rows.is_empty() {
+            rows.push((String::new(), String::new()));
         }
         let mut group: Vec<_> = stacks
             .iter()
@@ -108,13 +102,16 @@ pub fn render_stacks(
                 } else {
                     ""
                 };
-                output.push_str(&short_row(
-                    &graph,
-                    &branch.name,
-                    annotation,
-                    width,
-                    lane,
-                    color,
+                rows.push((
+                    branch.name.clone(),
+                    short_row(
+                        &graph,
+                        &branch.name,
+                        annotation,
+                        width,
+                        lane,
+                        color,
+                    ),
                 ));
             }
         }
@@ -125,12 +122,12 @@ pub fn render_stacks(
             marker.into()
         };
         let annotation = if multiple_trunks { " (trunk)" } else { "" };
-        output.push_str(&short_row(&graph, trunk, annotation, width, 0, color));
+        rows.push((
+            trunk.clone(),
+            short_row(&graph, trunk, annotation, width, 0, color),
+        ));
     }
-    if output.is_empty() {
-        output.push_str("No tracked stacks. Start one with sk create.\n");
-    }
-    output
+    rows
 }
 
 fn short_row(
@@ -148,7 +145,7 @@ fn short_row(
         .map(|(i, ch)| lane_color(&ch.to_string(), i / 2, ch == '◉', color))
         .collect();
     format!(
-        "{}{}{}{annotation}\n",
+        "{}{}{}{annotation}",
         styled_graph,
         " ".repeat(width.saturating_sub(graph.chars().count())),
         lane_color(name, lane, selected, color)
@@ -167,10 +164,10 @@ fn lane_color(text: &str, lane: usize, bold: bool, color: bool) -> String {
     )
 }
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 
 use anyhow::{Context, Result, bail};
-use crossterm::{cursor, event, execute, terminal};
+use skim::{Skim, helper::item::DefaultSkimItem, options::SkimOptionsBuilder};
 use tokio::io::AsyncWriteExt;
 
 use crate::core::{Repository, State};
@@ -189,43 +186,7 @@ pub async fn run(args: &[String]) -> Result<()> {
             {
                 bail!("usage: sk log short (or sk ls)");
             }
-            let mut views = Vec::new();
-            for stack in &state.stacks {
-                let mut parent = stack.trunk.as_str();
-                let mut branches = Vec::new();
-                for branch in &stack.branches {
-                    let needs_restack = repo
-                        .git(&[
-                            "merge-base",
-                            "--is-ancestor",
-                            parent,
-                            &branch.name,
-                        ])
-                        .await
-                        .is_err();
-                    branches.push(ViewBranch {
-                        name: branch.name.clone(),
-                        pr: branch.pr.as_ref().map(|pr| pr.number),
-                        state: branch
-                            .pr
-                            .as_ref()
-                            .map(|pr| {
-                                if pr.draft && pr.state == "OPEN" {
-                                    "DRAFT".into()
-                                } else {
-                                    pr.state.clone()
-                                }
-                            })
-                            .unwrap_or_default(),
-                        needs_restack,
-                    });
-                    parent = &branch.name;
-                }
-                views.push(ViewStack {
-                    trunk: stack.trunk.clone(),
-                    branches,
-                });
-            }
+            let views = stack_views(&repo, &state).await;
             let color = std::io::stdout().is_terminal()
                 && std::env::var_os("NO_COLOR").is_none();
             print!("{}", render_stacks(&views, &current, color));
@@ -237,7 +198,12 @@ pub async fn run(args: &[String]) -> Result<()> {
             let target = match args.get(1) {
                 Some(branch) => branch.clone(),
                 None => {
-                    let choices = checkout_choices(&state, &current);
+                    let views = stack_views(&repo, &state).await;
+                    let choices = stack_rows(
+                        &views,
+                        &current,
+                        std::env::var_os("NO_COLOR").is_none(),
+                    );
                     let Some(target) =
                         pick("Check out a branch", choices).await?
                     else {
@@ -336,27 +302,40 @@ pub async fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-pub fn checkout_choices(state: &State, current: &str) -> Vec<(String, String)> {
-    let mut choices = Vec::new();
+async fn stack_views(repo: &Repository, state: &State) -> Vec<ViewStack> {
+    let mut views = Vec::new();
     for stack in &state.stacks {
+        let mut parent = stack.trunk.as_str();
+        let mut branches = Vec::new();
         for branch in &stack.branches {
-            let marker = if branch.name == current { "●" } else { "○" };
-            let mut label =
-                format!("{marker} {} ({})", branch.name, stack.trunk);
-            if let Some(pr) = &branch.pr {
-                label.push_str(&format!("  #{} {}", pr.number, pr.state));
-            }
-            choices.push((branch.name.clone(), label));
+            let needs_restack = repo
+                .git(&["merge-base", "--is-ancestor", parent, &branch.name])
+                .await
+                .is_err();
+            branches.push(ViewBranch {
+                name: branch.name.clone(),
+                pr: branch.pr.as_ref().map(|pr| pr.number),
+                state: branch
+                    .pr
+                    .as_ref()
+                    .map(|pr| {
+                        if pr.draft && pr.state == "OPEN" {
+                            "DRAFT".into()
+                        } else {
+                            pr.state.clone()
+                        }
+                    })
+                    .unwrap_or_default(),
+                needs_restack,
+            });
+            parent = &branch.name;
         }
-        if !choices.iter().any(|(name, _)| name == &stack.trunk) {
-            let marker = if stack.trunk == current { "●" } else { "◉" };
-            choices.push((
-                stack.trunk.clone(),
-                format!("{marker} {} (trunk)", stack.trunk),
-            ));
-        }
+        views.push(ViewStack {
+            trunk: stack.trunk.clone(),
+            branches,
+        });
     }
-    choices
+    views
 }
 
 async fn switch(repo: &Repository, branch: &str) -> Result<()> {
@@ -378,102 +357,66 @@ pub(crate) async fn pick(
     if choices.is_empty() {
         bail!("No tracked branches. Start a stack with sk create.");
     }
+    run_picker(title, choices, false).await
+}
+
+pub(crate) async fn pick_menu(
+    title: &str,
+    choices: Vec<(String, String)>,
+) -> Result<Option<String>> {
+    run_picker(title, choices, true).await
+}
+
+async fn run_picker(
+    title: &str,
+    choices: Vec<(String, String)>,
+    menu: bool,
+) -> Result<Option<String>> {
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
-        bail!("interactive selection requires a terminal; specify a branch");
+        bail!("interactive selection requires a terminal");
     }
-    let title = title.to_owned();
-    tokio::task::spawn_blocking(move || picker(&title, &choices)).await?
-}
-
-struct TerminalGuard;
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
-        let _ = execute!(
-            std::io::stderr(),
-            cursor::Show,
-            terminal::LeaveAlternateScreen
-        );
-    }
-}
-
-fn picker(title: &str, choices: &[(String, String)]) -> Result<Option<String>> {
-    terminal::enable_raw_mode()?;
-    let _guard = TerminalGuard;
-    let mut out = std::io::stderr();
-    execute!(out, terminal::EnterAlternateScreen, cursor::Hide)?;
-    let mut query = String::new();
-    let mut selected = 0usize;
-    loop {
-        let mut matches: Vec<_> = choices
+    let prompt = format!("{title} > ");
+    tokio::task::spawn_blocking(move || {
+        let mut builder = SkimOptionsBuilder::default();
+        if menu {
+            builder
+                .height((choices.len() + 2).to_string())
+                .cycle(true)
+                .bind(vec!["j:down,k:up,tab:down,left:up,right:down".into()]);
+        }
+        let options = builder
+            .prompt(prompt)
+            .reverse(true)
+            .no_sort(true)
+            .ansi(true)
+            .build()?;
+        let items: Vec<_> = choices
             .iter()
-            .enumerate()
-            .filter_map(|(index, (_, label))| {
-                fuzzy_score(&query, label).map(|score| (score, index))
+            .map(|(value, label)| {
+                let mut item = DefaultSkimItem::new(
+                    label,
+                    true,
+                    &[],
+                    &[],
+                    &options.delimiter,
+                );
+                if value.is_empty() {
+                    item.disable();
+                }
+                item
             })
             .collect();
-        matches.sort_by_key(|&(score, index)| (score, index));
-        selected = selected.min(matches.len().saturating_sub(1));
-        let (width, height) = terminal::size()?;
-        let capacity = usize::from(height.saturating_sub(4)).max(1);
-        let start = selected.saturating_sub(capacity - 1);
-        execute!(
-            out,
-            cursor::MoveTo(0, 0),
-            terminal::Clear(terminal::ClearType::All)
-        )?;
-        writeln!(out, "{title}\r")?;
-        writeln!(out, "> {query}\r")?;
-        for (position, &(_, index)) in
-            matches.iter().enumerate().skip(start).take(capacity)
-        {
-            let marker = if position == selected { ">" } else { " " };
-            let label: String = choices[index]
-                .1
-                .chars()
-                .take(usize::from(width.saturating_sub(3)))
-                .collect();
-            writeln!(out, "{marker} {label}\r")?;
+        let output = Skim::run_items(options, items)
+            .map_err(|err| anyhow::anyhow!("{err}"))?;
+        if output.is_abort {
+            return Ok(None);
         }
-        out.flush()?;
-        let event::Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind == event::KeyEventKind::Release {
-            continue;
-        }
-        match key.code {
-            event::KeyCode::Esc => return Ok(None),
-            event::KeyCode::Char('c')
-                if key.modifiers.contains(event::KeyModifiers::CONTROL) =>
-            {
-                return Ok(None);
-            }
-            event::KeyCode::Enter => {
-                if let Some(&(_, index)) = matches.get(selected) {
-                    return Ok(Some(choices[index].0.clone()));
-                }
-            }
-            event::KeyCode::Up => selected = selected.saturating_sub(1),
-            event::KeyCode::Down => {
-                selected = (selected + 1).min(matches.len().saturating_sub(1));
-            }
-            event::KeyCode::Backspace => {
-                query.pop();
-                selected = 0;
-            }
-            event::KeyCode::Char(ch)
-                if !key.modifiers.intersects(
-                    event::KeyModifiers::CONTROL | event::KeyModifiers::ALT,
-                ) =>
-            {
-                query.push(ch);
-                selected = 0;
-            }
-            _ => {}
-        }
-    }
+        Ok(output
+            .selected_items
+            .first()
+            .map(|item| choices[item.rank.index as usize].0.clone()))
+    })
+    .await?
 }
 
 async fn apple_script(script: &str, args: &[&str]) -> Result<String> {
